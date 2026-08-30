@@ -80,10 +80,9 @@ KRONOWATT_DB_DSN='postgres://kronowatt:<password>@127.0.0.1:5432/kronowatt?sslmo
   ./kronowatt-server migrate up
 ```
 
-`KRONOWATT_DB_DSN` is a placeholder env var until `internal/config` settles
-on a real config format. Only one migration exists so far
-(`CREATE EXTENSION IF NOT EXISTS timescaledb;`) — the real domain schema,
-hypertables, and compression policy (spec §9a) are **TODO**, spec §43 Step 2.
+The full core schema exists (all spec §11 domain tables, hypertables,
+compression/retention policies per §9a) — see `CLAUDE.md` for the table
+list and design notes.
 
 ## 5. Build and deploy the backend + frontend
 
@@ -120,20 +119,25 @@ curl http://<box>:8080/health     # backend -> {"status":"ok"}
 curl http://<box>:8081/           # frontend
 ```
 
-## 8. Configuration — **TODO**
+## 8. Configuration
 
-`backend/internal/config` is currently an empty package. Once it's
-implemented, this section will document the config file / environment
-variables (Cozify host, FMI coordinates, spot price provider, Defa
-credentials, DB connection string, disk-usage alert threshold, etc.).
+Env vars only (no config file) — see `CLAUDE.md` "Configuration" for the
+full list and why. At minimum, the backend needs `KRONOWATT_DB_DSN` set
+(also used for the systemd service via `/opt/kronowatt/backend/kronowatt.env`,
+referenced by `EnvironmentFile=` in `kronowatt-backend.service`).
 
-## 9. Collectors — **TODO**
+## 9. Collectors
 
-Cozify, FMI, spot price, and EV (Defa) collectors are not implemented yet
-(spec §43 Steps 3, 4, 5, 9). Each will need its own setup notes here,
-including — per spec §7.4 — the manual re-auth flow for the Defa CloudCharge
-token, which must never be committed to the repo or stored in a raw
-payload.
+- **FMI weather (observations)**: implemented and running continuously
+  inside the server process (spec §43 Step 4, observations only — forecast
+  collection is still TODO). No setup needed beyond outbound internet
+  access; it's a public, unauthenticated API. Test manually with
+  `KRONOWATT_DB_DSN=... ./kronowatt-server collect weather`.
+- **Cozify, spot price, EV (Defa)** — **TODO** (spec §43 Steps 3, 5, 9).
+  Cozify is blocked on hardware availability. Each will need its own setup
+  notes here, including — per spec §7.4 — the manual re-auth flow for the
+  Defa CloudCharge token, which must never be committed to the repo or
+  stored in a raw payload.
 
 ## 10. Backups — **TODO**
 

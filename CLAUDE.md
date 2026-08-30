@@ -4,15 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-Scaffolding only — no collectors, domain logic, or API endpoints exist yet
-(spec §43 Step 1/2 in progress). What's real:
+Spec §43 Step 3 (Cozify) is blocked — no HAN device available yet. Step 4
+(FMI weather, observations only) is implemented instead, since it needs
+only public internet access. What's real:
 
-- `backend/`: Go module builds (`go build ./...`); `internal/*` packages are
-  empty stubs (no repository layer yet — code talking to the DB will need
-  to be written against the schema below). Migration tooling (goose) and
-  the full core schema (all §11 domain tables, hypertables, compression
-  policies) are wired and verified against a running TimescaleDB container
-  — see "Migrations" and "Database schema" below.
+- `backend/`: full core DB schema + migrations (see "Database schema"
+  below). FMI weather observation collector — fetch, parse, store, health
+  tracking — implemented and verified end-to-end against the real FMI API
+  and a real TimescaleDB container (`go run ./cmd/server collect weather`
+  for one-shot testing; runs continuously inside `go run ./cmd/server` via
+  `internal/scheduler`). `internal/collectors/{cozify,spotprice,ev}` and
+  `internal/{analysis,api}` are still empty stubs. Config is env-var based
+  (`internal/config`) — see "Configuration" below.
 - `frontend/`: SvelteKit 5 + TypeScript skeleton, `npm run build` and
   `npm run check` pass clean. No charts/dashboard/API integration yet — see
   "Fake data for frontend development" below for how to get test data to
@@ -27,9 +30,76 @@ for a newer `kronowatt_spec_v*.md` before starting work).
 
 Commands:
 ```
-cd backend && go build ./... && go vet ./...
+cd backend && go build ./... && go vet ./... && go test ./...
 cd frontend && npm run build && npm run check
 ```
+
+## Configuration
+
+Env vars, loaded by `internal/config.Load()` — not a YAML/config file.
+Chosen because the target deployment is a systemd service with an
+`EnvironmentFile` (see `deployment/kronowatt-backend.service`); a config
+file parser would be an extra dependency for no real benefit at this scale.
+Current vars: `KRONOWATT_DB_DSN` (required), `KRONOWATT_HTTP_ADDR` (default
+`:8080`), `KRONOWATT_FMI_STATION_FMISID` (default `101786`),
+`KRONOWATT_FMI_POLL_INTERVAL` (default `10m`). Revisit if a future
+collector needs config too structured for flat env vars (Cozify's spec
+§3.3 example shows YAML, but that's illustrative, not a firm requirement).
+
+## FMI weather collector
+
+`internal/collectors/weather` calls FMI's public open-data WFS API
+(`https://opendata.fmi.fi/wfs`, `fmi::observations::weather::simple` stored
+query) — no auth, unlike Cozify (no device yet) or Defa (unofficial/
+reverse-engineered). Verified against a live response for FMISID 101786
+(Oulu lentoasema, spec §4.1) rather than assumed from documentation:
+
+- Response is WFS/GML XML; `encoding/xml` matches struct tags against
+  element *local* names, ignoring the `wfs:`/`BsWfs:`/`gml:` namespace
+  prefixes, since the struct tags here don't specify a namespace. This was
+  confirmed against real output, not assumed.
+- **FMI encodes "no reading for this parameter at this time" as literal
+  `NaN` text**, not by omitting the element (confirmed live — `r_1h`,
+  `ri_10min`, `snow_aws` are frequently `NaN`). The collector drops any
+  `NaN` value entirely — both from the domain struct (stays `nil`, per the
+  spec §4.2 "missing parameter must not fail the observation" rule) and
+  from `RawPayload` (`encoding/json` errors on `NaN`, and it isn't a real
+  reading anyway).
+- Ten parameter codes are mapped to columns: `t2m`→AirTemperature,
+  `rh`→RelativeHumidity, `td`→DewPoint, `p_sea`→AirPressure,
+  `ws_10min`→WindSpeed, `wd_10min`→WindDirection, `wg_10min`→WindGust,
+  `r_1h`→Precipitation, `n_man`→CloudCover, `vis`→Visibility. Confirmed
+  live rather than guessed from the spec's field list. Unmapped codes the
+  API also returns (`ri_10min`, `snow_aws`, `wawa`) still land in
+  `RawPayload` per-timestamp.
+- The default query window (no `starttime`) is ~12h at 10-min resolution
+  for this station — confirmed live. That's the natural gap-backfill
+  margin for a `KRONOWATT_FMI_POLL_INTERVAL` in the spec's suggested
+  10-15min range; a genuinely longer outage would need an explicit
+  `since` argument to `FetchObservations` (already supported, just not
+  wired to persisted "last successful collection time" yet).
+- `weather_test.go` uses a trimmed real fixture
+  (`testdata/observations_101786.xml`, 4 timestamps) rather than a
+  hand-written one or a live network call in tests.
+
+Forecast collection (spec §4.3, separate endpoint/stored query,
+never-overwrite-old-versions semantics) is not implemented yet.
+
+## Scheduler
+
+`internal/scheduler.Run(ctx, name, interval, job)` is a generic ticker
+loop: run immediately, then on every tick, until `ctx` is cancelled. A
+failed run is logged and the loop continues — it deliberately does not
+know about storage or collector-specific error handling, so one collector
+misbehaving can't take down the loop running another (spec §2.1). Each
+collector's actual fetch/store/health-recording logic is composed into a
+`scheduler.Job` closure in `cmd/server` (see `newWeatherJob` in
+`cmd/server/collect.go`) — the composition root, not the collector package
+itself, is what wires a collector to storage.
+
+Logging is `log/slog` with the default text handler (`slog.Default()`),
+used for anything recurring/collector-related; plain `log.Fatal` is still
+fine for one-shot startup failures in `main()`.
 
 ## What this system is
 
