@@ -4,17 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-This repository currently contains only `kronowatt_spec_v1.1.md` — the full
-implementation specification. **No code has been written yet.** There is no
-`backend/`, `frontend/`, or `deployment/` directory, no build tooling, and no
-tests. Treat the spec as the source of truth for everything below; when it
-and this file disagree, the spec wins (it is versioned — check for a newer
-`kronowatt_spec_v*.md` before starting work).
+Scaffolding only — no collectors, domain logic, or API endpoints exist yet
+(spec §43 Step 1/2 in progress). What's real:
 
-Because nothing is implemented, there are no build/lint/test commands to
-document yet. Once the Go backend and SvelteKit frontend exist, add their
-actual commands here (`go build ./...`, `go test ./...`, `npm run build`,
-etc.) rather than guessing them now.
+- `backend/`: Go module builds (`go build ./...`); `internal/*` packages are
+  empty stubs; migration tooling (goose) is wired and verified against a
+  running TimescaleDB container — see "Migrations" below.
+- `frontend/`: SvelteKit 5 + TypeScript skeleton, `npm run build` and
+  `npm run check` pass clean.
+- `deployment/`: custom TimescaleDB Docker image (builds, extension
+  verified), systemd unit files, `deploy.sh` (not yet exercised against a
+  real target box).
+
+Treat `kronowatt_spec_v1.1.md` as the source of truth for anything this file
+doesn't cover; when the two disagree, the spec wins (it's versioned — check
+for a newer `kronowatt_spec_v*.md` before starting work).
+
+Commands:
+```
+cd backend && go build ./... && go vet ./...
+cd frontend && npm run build && npm run check
+```
 
 ## What this system is
 
@@ -133,6 +143,34 @@ The health endpoint must expose disk usage and report "degraded" above ~80%
 usage (§35/§44.17). When adding any new persistent data path, check it
 against this budget and retention table rather than defaulting to "store
 everything forever."
+
+## Migrations
+
+Tool: [goose](https://github.com/pressly/goose) (`github.com/pressly/goose/v3`),
+chosen over golang-migrate/tern for its `go:embed` support — migrations
+compile into the binary, matching the single-static-binary deployment model
+(no separate migration tool needs to exist on the target box).
+
+- SQL migration files live in `backend/migrations/*.sql`
+  (`-- +goose Up` / `-- +goose Down` markers) and are embedded via
+  `backend/migrations/embed.go` (`package migrations`, `embed.FS`). Because
+  `go:embed` patterns can't reference parent directories, that package must
+  stay inside `backend/migrations/` itself — don't move the embed directive
+  into `internal/storage` or elsewhere.
+- Run via the server binary's `migrate` subcommand, not a standalone CLI:
+  `KRONOWATT_DB_DSN=postgres://... go run ./cmd/server migrate up` (also
+  supports `down`, `status`, etc. — anything `goose.RunContext` accepts).
+  `KRONOWATT_DB_DSN` is a placeholder until `internal/config` settles on a
+  real config format; expect this env var to move once that happens.
+- `00001_timescaledb_extension.sql` (`CREATE EXTENSION IF NOT EXISTS
+  timescaledb;`) is deliberately the only migration so far — it's
+  infrastructure, not domain schema. The Docker image
+  (`deployment/timescaledb/init/`) already creates this extension too; the
+  migration is a no-op belt-and-suspenders for anyone running the binary
+  against a Postgres that isn't the shipped image.
+- The real hypertable schema, compression policy (§9a), and uniqueness
+  constraints (§2.6) belong in later numbered migrations, written as part of
+  spec §43 Step 2 — not yet done.
 
 ## Source-specific notes worth remembering
 

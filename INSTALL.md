@@ -69,12 +69,21 @@ docker exec kronowatt-timescaledb psql -U kronowatt -d kronowatt -c '\dx'
 The container binds Postgres to `127.0.0.1:5432` only (not exposed on the
 LAN) — the Go backend connects to it locally on the same box.
 
-## 4. Database migrations — **TODO**
+## 4. Database migrations
 
-Not implemented yet (spec §43 Step 2). Once a migration framework is chosen
-and `backend/migrations/` has real migrations, this section will document
-the exact command to run them, including confirming the TimescaleDB
-compression policy is applied (spec §9a) as part of the first migration.
+Migrations run from inside the server binary itself (via
+[goose](https://github.com/pressly/goose), embedded — see `CLAUDE.md` for
+why), so no separate migration tool needs to be installed on the target box.
+
+```
+KRONOWATT_DB_DSN='postgres://kronowatt:<password>@127.0.0.1:5432/kronowatt?sslmode=disable' \
+  ./kronowatt-server migrate up
+```
+
+`KRONOWATT_DB_DSN` is a placeholder env var until `internal/config` settles
+on a real config format. Only one migration exists so far
+(`CREATE EXTENSION IF NOT EXISTS timescaledb;`) — the real domain schema,
+hypertables, and compression policy (spec §9a) are **TODO**, spec §43 Step 2.
 
 ## 5. Build and deploy the backend + frontend
 
