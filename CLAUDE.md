@@ -8,8 +8,11 @@ Scaffolding only — no collectors, domain logic, or API endpoints exist yet
 (spec §43 Step 1/2 in progress). What's real:
 
 - `backend/`: Go module builds (`go build ./...`); `internal/*` packages are
-  empty stubs; migration tooling (goose) is wired and verified against a
-  running TimescaleDB container — see "Migrations" below.
+  empty stubs (no repository layer yet — code talking to the DB will need
+  to be written against the schema below). Migration tooling (goose) and
+  the full core schema (all §11 domain tables, hypertables, compression
+  policies) are wired and verified against a running TimescaleDB container
+  — see "Migrations" and "Database schema" below.
 - `frontend/`: SvelteKit 5 + TypeScript skeleton, `npm run build` and
   `npm run check` pass clean.
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
@@ -168,9 +171,50 @@ compile into the binary, matching the single-static-binary deployment model
   (`deployment/timescaledb/init/`) already creates this extension too; the
   migration is a no-op belt-and-suspenders for anyone running the binary
   against a Postgres that isn't the shipped image.
-- The real hypertable schema, compression policy (§9a), and uniqueness
-  constraints (§2.6) belong in later numbered migrations, written as part of
-  spec §43 Step 2 — not yet done.
+## Database schema
+
+All §11 domain tables exist (migrations `00002`–`00007`), verified against a
+real TimescaleDB container (hypertables created, compression/retention
+policies active, idempotency constraints enforced, up/down/reset all
+tested). Design decisions worth knowing before touching this:
+
+- **Hypertables** (partitioned on a `time`/`interval_start`/`generated_at`
+  column): `electricity_measurement`, `weather_observation`,
+  `weather_forecast`, `spot_price`, `ev_measurement`. Compression (§9a,
+  ~7-day-old chunks) is on for all of these *except* `weather_forecast`
+  (which gets a 2-year drop/retention policy instead — spec §9a puts it in
+  a different bucket than the others) and `ev_measurement` (spec's
+  compression table doesn't mention EV at all, and volume is negligible).
+- **Plain tables** (not hypertables): `collector` (mutable health state),
+  `electricity_contract` / `contract_price_period` (small, manually
+  entered, mutable), `ev_charging_session` (sparse, mutable while a
+  session is in progress — doesn't fit hypertables' append-only chunk
+  model).
+- **Idempotency (§2.6)** is enforced via `UNIQUE` constraints, not
+  application-level dedup: `electricity_measurement` and `ev_measurement`
+  are unique on `time` alone (*not* `(time, source)`) — a live sample and a
+  history-backfilled sample for the same device timestamp are the same
+  logical measurement regardless of which endpoint produced it, so
+  `source` must not be part of the key. `weather_observation` is unique on
+  `(time, station_fmisid)`; `spot_price` on `(interval_start, source)`;
+  `weather_forecast` on `(generated_at, target_time, provider)` (deliberately
+  *not* deduped across generation runs — old forecast versions must survive,
+  spec §4.3); `ev_charging_session` on `(source, start_time)`.
+- **Contract pricing is period-scoped, not contract-scoped**: `energy_price`,
+  `spot_margin`, `monthly_fee`, `transfer_price`, `taxes`, `vat`, and
+  `other_fees` all live on `contract_price_period`, not
+  `electricity_contract`. This is an interpretation of spec §6 (the fields
+  list doesn't explicitly say which level they belong on) driven by §2.4:
+  "effective price determined by timestamp" only works if pricing is
+  time-sliced. If this turns out wrong, it's a migration away, not a big
+  rewrite — nothing else depends on it yet.
+- **No FK between `ev_measurement` and `ev_charging_session`** — the spec's
+  field lists (§7.3) don't include a linking column, and a time-range join
+  (`start_time <= time <= end_time`) is enough for analysis. Revisit if that
+  turns out to be wrong once real Defa data exists.
+- EV field lists (`ev_charging_session`, `ev_measurement`) are explicitly
+  provisional per spec §7.3/§37 — expect to revise columns once verified
+  against `ha-defa-power`'s actual schema.
 
 ## Source-specific notes worth remembering
 
