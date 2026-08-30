@@ -15,8 +15,9 @@ step-by-step installation onto the target box.
 
 ## Status
 
-Scaffolding only — no collectors, migrations, or API endpoints are
-implemented yet. Follow the implementation sequence in spec §43.
+Core database schema and migrations exist (see `CLAUDE.md`); no collectors
+or API endpoints are implemented yet. Follow the implementation sequence in
+spec §43.
 
 ## Backend
 
@@ -32,8 +33,9 @@ go run ./cmd/server
 ```
 cd frontend
 npm install
-npm run dev      # local dev server
-npm run build    # static assets to frontend/build
+npm run generate:fake-data   # test fixtures, no backend needed yet — see CLAUDE.md
+npm run dev                  # local dev server
+npm run build                # static assets to frontend/build
 ```
 
 ## Database (dev)

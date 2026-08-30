@@ -14,7 +14,9 @@ Scaffolding only — no collectors, domain logic, or API endpoints exist yet
   policies) are wired and verified against a running TimescaleDB container
   — see "Migrations" and "Database schema" below.
 - `frontend/`: SvelteKit 5 + TypeScript skeleton, `npm run build` and
-  `npm run check` pass clean.
+  `npm run check` pass clean. No charts/dashboard/API integration yet — see
+  "Fake data for frontend development" below for how to get test data to
+  build against in the meantime.
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -146,6 +148,35 @@ The health endpoint must expose disk usage and report "degraded" above ~80%
 usage (§35/§44.17). When adding any new persistent data path, check it
 against this budget and retention table rather than defaulting to "store
 everything forever."
+
+## Fake data for frontend development
+
+There is no backend API yet, so `frontend/scripts/generate-fake-data.mjs`
+generates static JSON fixtures instead — a stand-in until spec §43 Step 8
+exists, not a preview of the real API's response shape. Run
+`npm run generate:fake-data` (optionally `-- --start-year 2020 --end-year
+2025 --annual-kwh 12000 --ev-sessions-per-week 3 --ev-kwh-per-session 35`)
+to (re)generate `frontend/static/fake-data/{electricity,weather,spot_price,
+ev_sessions}_{year}.json` plus a `manifest.json` listing the years/params
+used. Output is gitignored and deterministic per `--seed` (default 42) —
+regenerate rather than editing the JSON by hand.
+
+Modeling choices worth knowing if this needs adjusting:
+- Hourly resolution, not the real 10s Cozify sampling rate — a full year at
+  10s would be ~3M rows, unworkable for a browser fetch. If per-source
+  raw-resolution testing is ever needed, that's a different, much smaller
+  fixture, not a resolution bump here.
+- Household consumption uses a fixed month-weight curve
+  (`MONTH_WEIGHT` in the script) forced to put exactly 50% of annual kWh in
+  Jan-Mar, then a shared per-day random draw nudges both that day's
+  synthetic temperature *and* its consumption in the same direction
+  (colder day → more heating load) — so a temperature-vs-consumption chart
+  built on this data will show a real, not just coincidental, correlation.
+- Temperature is a synthetic annual cosine (Jan ≈ -12°C, Jul ≈ +14°C, loosely
+  Oulu-shaped) plus daily/hourly noise — not calibrated against real FMI
+  normals.
+- Spot price and EV sessions are generated independently of the
+  temperature/consumption model (no cross-correlation with weather).
 
 ## Migrations
 
