@@ -38,21 +38,32 @@ sudo chown -R kronowatt:kronowatt /opt/kronowatt
 
 ## 3. Database — TimescaleDB via Docker
 
-Copy `deployment/docker-compose.yml` to the box (e.g. into
-`/opt/kronowatt/deployment/`), then create the DB password secret it
-expects — this file is git-ignored and must never be committed:
+Copy the whole `deployment/` directory to the box (e.g. into
+`/opt/kronowatt/deployment/`) — `docker-compose.yml` builds the DB image
+from `deployment/timescaledb/` rather than pulling a pre-tagged one, so that
+directory needs to come along too. Then create the DB password secret the
+compose file expects — this file is git-ignored and must never be
+committed:
 
 ```
 mkdir -p deployment/secrets
 echo -n '<a-strong-password>' > deployment/secrets/db_password
 ```
 
-Start it:
+Build and start it:
 
 ```
 cd deployment
-docker compose up -d
+docker compose up -d --build
 docker compose ps   # confirm kronowatt-timescaledb is healthy
+```
+
+The image is a thin layer on the official `timescale/timescaledb` image
+(see `deployment/timescaledb/Dockerfile`) that just runs an init script to
+create the `timescaledb` extension on first start — verify with:
+
+```
+docker exec kronowatt-timescaledb psql -U kronowatt -d kronowatt -c '\dx'
 ```
 
 The container binds Postgres to `127.0.0.1:5432` only (not exposed on the
