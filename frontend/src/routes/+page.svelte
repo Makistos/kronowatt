@@ -12,8 +12,9 @@
 		type SpotPriceRow,
 		type EvSession
 	} from '$lib/fakeData';
-	import { MONTH_LABELS, monthlySums, dailySeries } from '$lib/aggregate';
+	import { MONTH_KEYS, monthlySums, dailySeries } from '$lib/aggregate';
 	import { formatCompact, formatNumber } from '$lib/format';
+	import { _ as translate, locale } from 'svelte-i18n';
 	import MonthlyBarChart from '$lib/charts/MonthlyBarChart.svelte';
 	import DailyLineChart from '$lib/charts/DailyLineChart.svelte';
 	import ScatterChart from '$lib/charts/ScatterChart.svelte';
@@ -118,6 +119,8 @@
 		return out;
 	});
 
+	const monthLabels = $derived(MONTH_KEYS.map((k) => $translate(`months.${k}`)));
+
 	const monthTicks = $derived.by(() => {
 		const line = electricityDailySeries[0]?.points ?? [];
 		const ticks: { pos: number; label: string }[] = [];
@@ -125,7 +128,7 @@
 		for (const p of line) {
 			const m = new Date(p.date + 'T00:00:00Z').getUTCMonth();
 			if (m !== lastMonth) {
-				ticks.push({ pos: p.dayOfYear, label: MONTH_LABELS[m] });
+				ticks.push({ pos: p.dayOfYear, label: monthLabels[m] });
 				lastMonth = m;
 			}
 		}
@@ -168,25 +171,25 @@
 </script>
 
 <svelte:head>
-	<title>Kronowatt</title>
+	<title>{$translate('dashboard.title')}</title>
 </svelte:head>
 
 <div class="page">
-	<h1>Kronowatt</h1>
+	<h1>{$translate('dashboard.title')}</h1>
 
 	{#if manifestError}
 		<div class="empty-state">
-			<p><strong>No fake data found.</strong></p>
-			<p>Run this from the <code>frontend/</code> directory, then reload:</p>
+			<p><strong>{$translate('emptyState.heading')}</strong></p>
+			<p>{$translate('emptyState.instructions')}</p>
 			<pre>npm run generate:fake-data</pre>
 			<p class="error-detail">{manifestError}</p>
 		</div>
 	{:else if !manifest}
-		<p class="muted">Loading…</p>
+		<p class="muted">{$translate('dashboard.loading')}</p>
 	{:else}
 		<div class="filters">
 			<label>
-				Year
+				{$translate('dashboard.year')}
 				<select value={year} onchange={onYearChange}>
 					{#each manifest.years as y (y)}
 						<option value={y}>{y}</option>
@@ -194,61 +197,73 @@
 				</select>
 			</label>
 			<label>
-				Compare with
+				{$translate('dashboard.compareWith')}
 				<select value={compareYear ?? ''} onchange={onCompareChange}>
-					<option value="">None</option>
+					<option value="">{$translate('dashboard.none')}</option>
 					{#each manifest.years.filter((y) => y !== year) as y (y)}
 						<option value={y}>{y}</option>
 					{/each}
 				</select>
 			</label>
-			{#if isLoading}<span class="muted">Loading…</span>{/if}
+			{#if isLoading}<span class="muted">{$translate('dashboard.loading')}</span>{/if}
 		</div>
 
 		{#if primary}
 			<div class="kpis">
-				<StatTile label="Annual consumption" value="{formatCompact(totalKwh)} kWh" sub={String(year)} />
-				<StatTile label="Average temperature" value="{formatNumber(avgTemp, 1)}°C" sub={String(year)} />
-				<StatTile label="Average spot price" value="{formatNumber(avgSpotPrice, 1)} €/MWh" sub={String(year)} />
 				<StatTile
-					label="EV charging"
-					value="{formatCompact(evTotalKwh)} kWh"
-					sub="{evSessionCount} sessions in {year}"
+					label={$translate('kpi.annualConsumption')}
+					value="{formatCompact(totalKwh, $locale ?? 'en')} kWh"
+					sub={String(year)}
+				/>
+				<StatTile
+					label={$translate('kpi.averageTemperature')}
+					value="{formatNumber(avgTemp, 1, $locale ?? 'en')}°C"
+					sub={String(year)}
+				/>
+				<StatTile
+					label={$translate('kpi.averageSpotPrice')}
+					value="{formatNumber(avgSpotPrice, 1, $locale ?? 'en')} €/MWh"
+					sub={String(year)}
+				/>
+				<StatTile
+					label={$translate('kpi.evCharging')}
+					value="{formatCompact(evTotalKwh, $locale ?? 'en')} kWh"
+					sub={$translate('kpi.evSessionsSub', { values: { count: evSessionCount, year } })}
 				/>
 			</div>
 
 			<div class="charts">
 				<MonthlyBarChart
-					title="Monthly electricity consumption"
-					months={MONTH_LABELS}
+					title={$translate('charts.monthlyConsumption')}
+					months={monthLabels}
 					series={consumptionSeries}
 					unit="kWh"
 				/>
 
 				<ScatterChart
-					title="Daily consumption vs. temperature"
+					title={$translate('charts.consumptionVsTemperature')}
 					series={scatterSeries}
-					xLabel="Avg. temperature (°C)"
-					yLabel="Consumption (kWh)"
+					xLabel={$translate('charts.xTemperature')}
+					yLabel={$translate('charts.yConsumption')}
 				/>
 
 				<DailyLineChart
-					title="Daily electricity consumption"
+					title={$translate('charts.dailyConsumption')}
 					series={electricityDailySeries}
 					unit="kWh"
 					xTicks={monthTicks}
 				/>
 
 				<DailyLineChart
-					title="Daily average spot price"
+					title={$translate('charts.dailySpotPrice')}
 					series={spotPriceDailySeries}
 					unit="€/MWh"
 					xTicks={monthTicks}
 				/>
 
 				<MonthlyBarChart
-					title="EV charging energy per month"
-					months={MONTH_LABELS}
+					title={$translate('charts.evMonthly')}
+					months={monthLabels}
 					series={evMonthlySeries}
 					unit="kWh"
 				/>

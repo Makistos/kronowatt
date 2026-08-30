@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { formatNumber } from '$lib/format';
+	import { formatNumber, formatDate } from '$lib/format';
+	import { locale } from 'svelte-i18n';
 	import Tooltip from './Tooltip.svelte';
 
 	type Point = { x: number; y: number; date?: string };
@@ -74,11 +75,13 @@
 			{#each yTicks as t (t)}
 				<line x1={margin.left} x2={W - margin.right} y1={y(t)} y2={y(t)} stroke="var(--gridline)" stroke-width="1" />
 				<text x={margin.left - 8} y={y(t)} text-anchor="end" dominant-baseline="middle" class="axis-label"
-					>{formatNumber(t, 1)}</text
+					>{formatNumber(t, 1, $locale ?? 'en')}</text
 				>
 			{/each}
 			{#each xTicks as t (t)}
-				<text x={x(t)} y={H - margin.bottom + 18} text-anchor="middle" class="axis-label">{formatNumber(t, 1)}</text>
+				<text x={x(t)} y={H - margin.bottom + 18} text-anchor="middle" class="axis-label"
+					>{formatNumber(t, 1, $locale ?? 'en')}</text
+				>
 			{/each}
 			<line
 				x1={margin.left}
@@ -116,12 +119,12 @@
 		<Tooltip x={pointerPos.x} y={pointerPos.y} visible={hovered !== null}>
 			{#snippet children()}
 				{#if hovered}
-					<strong>{hovered.point.date ?? ''}</strong>
+					<strong>{hovered.point.date ? formatDate(hovered.point.date, $locale ?? 'en') : ''}</strong>
 					{#if series.length > 1}
 						<div>{hovered.seriesName}</div>
 					{/if}
-					<div>{xLabel}: <strong>{formatNumber(hovered.point.x, 1)}</strong></div>
-					<div>{yLabel}: <strong>{formatNumber(hovered.point.y, 1)}</strong></div>
+					<div>{xLabel}: <strong>{formatNumber(hovered.point.x, 1, $locale ?? 'en')}</strong></div>
+					<div>{yLabel}: <strong>{formatNumber(hovered.point.y, 1, $locale ?? 'en')}</strong></div>
 				{/if}
 			{/snippet}
 		</Tooltip>

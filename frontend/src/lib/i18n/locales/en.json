@@ -1,0 +1,47 @@
+{
+	"dashboard": {
+		"title": "Kronowatt",
+		"year": "Year",
+		"compareWith": "Compare with",
+		"none": "None",
+		"loading": "Loading…"
+	},
+	"emptyState": {
+		"heading": "No fake data found.",
+		"instructions": "Run this from the frontend/ directory, then reload:"
+	},
+	"kpi": {
+		"annualConsumption": "Annual consumption",
+		"averageTemperature": "Average temperature",
+		"averageSpotPrice": "Average spot price",
+		"evCharging": "EV charging",
+		"evSessionsSub": "{count} sessions in {year}"
+	},
+	"charts": {
+		"monthlyConsumption": "Monthly electricity consumption",
+		"consumptionVsTemperature": "Daily consumption vs. temperature",
+		"dailyConsumption": "Daily electricity consumption",
+		"dailySpotPrice": "Daily average spot price",
+		"evMonthly": "EV charging energy per month",
+		"xTemperature": "Avg. temperature (°C)",
+		"yConsumption": "Consumption (kWh)",
+		"tableView": "Table view",
+		"chartView": "Chart view",
+		"tableMonthHeader": "Month",
+		"dayLabel": "Day {day}"
+	},
+	"months": {
+		"jan": "Jan",
+		"feb": "Feb",
+		"mar": "Mar",
+		"apr": "Apr",
+		"may": "May",
+		"jun": "Jun",
+		"jul": "Jul",
+		"aug": "Aug",
+		"sep": "Sep",
+		"oct": "Oct",
+		"nov": "Nov",
+		"dec": "Dec"
+	}
+}

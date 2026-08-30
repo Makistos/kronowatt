@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { niceMax } from '$lib/aggregate';
 	import { formatNumber } from '$lib/format';
+	import { _ as translate, locale } from 'svelte-i18n';
 	import Tooltip from './Tooltip.svelte';
 
 	type Series = { name: string; color: string; values: number[] }; // values.length === months.length
@@ -51,7 +52,7 @@
 	<figcaption>
 		<span class="title">{title}</span>
 		<button class="table-toggle" onclick={() => (showTable = !showTable)}>
-			{showTable ? 'Chart view' : 'Table view'}
+			{showTable ? $translate('charts.chartView') : $translate('charts.tableView')}
 		</button>
 	</figcaption>
 
@@ -67,7 +68,7 @@
 		<table class="data-table">
 			<thead>
 				<tr>
-					<th>Month</th>
+					<th>{$translate('charts.tableMonthHeader')}</th>
 					{#each series as s (s.name)}
 						<th>{s.name} ({unit})</th>
 					{/each}
@@ -78,7 +79,7 @@
 					<tr>
 						<td>{m}</td>
 						{#each series as s (s.name)}
-							<td>{formatNumber(s.values[i], 1)}</td>
+							<td>{formatNumber(s.values[i], 1, $locale ?? 'en')}</td>
 						{/each}
 					</tr>
 				{/each}
@@ -97,7 +98,7 @@
 						stroke-width="1"
 					/>
 					<text x={margin.left - 8} y={y(t)} text-anchor="end" dominant-baseline="middle" class="axis-label"
-						>{formatNumber(t)}</text
+						>{formatNumber(t, 0, $locale ?? 'en')}</text
 					>
 				{/each}
 				<line
@@ -151,7 +152,7 @@
 						<strong>{months[hoveredMonth]}</strong>
 						{#each series as s (s.name)}
 							<div><span class="key" style="background:{s.color}"></span>{s.name}: <strong
-									>{formatNumber(s.values[hoveredMonth], 1)} {unit}</strong
+									>{formatNumber(s.values[hoveredMonth], 1, $locale ?? 'en')} {unit}</strong
 								></div
 							>
 						{/each}

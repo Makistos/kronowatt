@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { niceMax } from '$lib/aggregate';
-	import { formatNumber } from '$lib/format';
+	import { formatNumber, formatDate } from '$lib/format';
+	import { _ as translate, locale } from 'svelte-i18n';
 	import Tooltip from './Tooltip.svelte';
 
 	type Point = { dayOfYear: number; value: number; date?: string };
@@ -90,7 +91,7 @@
 					stroke-width="1"
 				/>
 				<text x={margin.left - 8} y={y(t)} text-anchor="end" dominant-baseline="middle" class="axis-label"
-					>{formatNumber(t)}</text
+					>{formatNumber(t, 0, $locale ?? 'en')}</text
 				>
 			{/each}
 			<line
@@ -142,12 +143,16 @@
 			{#snippet children()}
 				{#if hoverDay !== null}
 					{@const anyPoint = nearest(series[0]?.points ?? [], hoverDay)}
-					<strong>{anyPoint?.date ?? `Day ${hoverDay}`}</strong>
+					<strong
+						>{anyPoint?.date
+							? formatDate(anyPoint.date, $locale ?? 'en')
+							: $translate('charts.dayLabel', { values: { day: hoverDay } })}</strong
+					>
 					{#each series as s (s.name)}
 						{@const p = nearest(s.points, hoverDay)}
 						{#if p}
 							<div><span class="key" style="background:{s.color}"></span>{s.name}: <strong
-									>{formatNumber(p.value, 1)} {unit}</strong
+									>{formatNumber(p.value, 1, $locale ?? 'en')} {unit}</strong
 								></div
 							>
 						{/if}

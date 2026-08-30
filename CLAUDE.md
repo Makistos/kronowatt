@@ -292,6 +292,45 @@ end-to-end rather than improvising:
   legend swatches and tooltip series-keys are small colored rects/lines
   beside plain-ink text, not colored text.
 
+## Frontend localization
+
+Uses `svelte-i18n` (store-based, no compiler step) rather than a
+compile-time solution like Paraglide — simpler to wire up correctly for a
+single-locale start, and doesn't add a build-time codegen step for one
+language. English (`src/lib/i18n/locales/en.json`) is the only registered
+locale; `src/lib/i18n/index.ts` hardcodes `initialLocale: 'en'` rather than
+detecting the browser's language, since there's nothing else to fall back
+to yet.
+
+- **Every UI string is a translation key** — dashboard chrome, chart
+  titles/axis labels, table headers, the fake-data-missing empty state.
+  Don't add a new hardcoded English string to a component; add a key to
+  `en.json` instead, even though only English exists right now.
+- **Month names are language-neutral keys, not labels**:
+  `MONTH_KEYS` in `aggregate.ts` (`'jan'`…`'dec'`) index the 12 monthly
+  buckets; a component resolves them to display text via
+  `$translate(\`months.${key}\`)`. Never reintroduce an English
+  `MONTH_LABELS` array — that was the pre-i18n version of this and it's
+  gone for a reason.
+- **Numbers and dates are locale-aware, not just strings**: `formatNumber`,
+  `formatCompact`, `formatDate` (`src/lib/format.ts`) all take a `locale`
+  parameter, threaded from svelte-i18n's `locale` store (`$locale ?? 'en'`)
+  at every call site. This matters once a second locale exists (e.g.
+  Finnish formats decimals/thousands differently) even though it's
+  invisible with only English registered.
+- **Import alias is `_ as translate`, never `_ as t`.** Several charts loop
+  `{#each yTicks as t (t)}` — aliasing the translation store to `t` would
+  get shadowed by that loop variable and silently break inside it (caught
+  this once already; don't reintroduce it).
+- **Avoid `{@html}` for interpolated translations.** Tried wrapping part of
+  a translated sentence in `<code>` via an interpolated value once; reverted
+  it before committing — it forces `{@html}` on translated content (a risk
+  vector if a value is ever less trusted than today's static string) and
+  splitting a sentence around inline markup reads badly once a language
+  with different word order is added. Keep translated strings plain text.
+- `+layout.svelte` gates rendering on svelte-i18n's `$isLoading` store so
+  there's no flash of untranslated keys before the locale JSON loads.
+
 ## Migrations
 
 Tool: [goose](https://github.com/pressly/goose) (`github.com/pressly/goose/v3`),

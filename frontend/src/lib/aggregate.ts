@@ -1,16 +1,19 @@
-export const MONTH_LABELS = [
-	'Jan',
-	'Feb',
-	'Mar',
-	'Apr',
-	'May',
-	'Jun',
-	'Jul',
-	'Aug',
-	'Sep',
-	'Oct',
-	'Nov',
-	'Dec'
+// Language-neutral lookup keys (index = UTC month), not display labels —
+// resolve to text via i18n ($t(`months.${MONTH_KEYS[i]}`)), never hardcode
+// English month names in a component.
+export const MONTH_KEYS = [
+	'jan',
+	'feb',
+	'mar',
+	'apr',
+	'may',
+	'jun',
+	'jul',
+	'aug',
+	'sep',
+	'oct',
+	'nov',
+	'dec'
 ];
 
 /** Sums valueFn(row) into 12 monthly buckets (UTC month of row.time). */
