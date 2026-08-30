@@ -17,6 +17,7 @@ type Config struct {
 	HTTPAddr         string
 	FMIStationFMISID string
 	FMIPollInterval  time.Duration
+	DiskCheckPath    string
 }
 
 func Load() (Config, error) {
@@ -24,6 +25,10 @@ func Load() (Config, error) {
 		DBDSN:            os.Getenv("KRONOWATT_DB_DSN"),
 		HTTPAddr:         getEnvDefault("KRONOWATT_HTTP_ADDR", ":8080"),
 		FMIStationFMISID: getEnvDefault("KRONOWATT_FMI_STATION_FMISID", "101786"),
+		// Spec §9a: the target box has a single ~30GB SSD, so any path on
+		// it reflects overall disk pressure — default to the root
+		// filesystem rather than requiring one more env var to be set.
+		DiskCheckPath: getEnvDefault("KRONOWATT_DISK_CHECK_PATH", "/"),
 	}
 
 	if cfg.DBDSN == "" {

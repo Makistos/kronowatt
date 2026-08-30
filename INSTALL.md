@@ -115,7 +115,7 @@ directly) before this is considered final.
 ## 7. Verify
 
 ```
-curl http://<box>:8080/health     # backend -> {"status":"ok"}
+curl http://<box>:8080/health     # -> {"status":"ok","disk_used_pct":...,"collectors":[...]}
 curl http://<box>:8081/           # frontend
 ```
 

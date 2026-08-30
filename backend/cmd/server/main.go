@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"kronowatt/backend/internal/api"
 	"kronowatt/backend/internal/config"
 	"kronowatt/backend/internal/scheduler"
 	"kronowatt/backend/internal/storage"
@@ -46,13 +47,7 @@ func runServer() {
 	weatherJob := newWeatherJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool))
 	go scheduler.Run(ctx, "fmi_observation", cfg.FMIPollInterval, weatherJob)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
-	})
-
-	server := &http.Server{Addr: cfg.HTTPAddr, Handler: mux}
+	server := &http.Server{Addr: cfg.HTTPAddr, Handler: api.NewRouter(pool, cfg.DiskCheckPath)}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

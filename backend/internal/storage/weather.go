@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -42,4 +43,35 @@ func (r *WeatherRepository) UpsertObservations(ctx context.Context, obs []domain
 		inserted += tag.RowsAffected()
 	}
 	return inserted, nil
+}
+
+// ListObservations returns observations in [start, end), ordered by time.
+func (r *WeatherRepository) ListObservations(ctx context.Context, start, end time.Time) ([]domain.WeatherObservation, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			time, station_fmisid, air_temperature, relative_humidity, dew_point,
+			air_pressure, wind_speed, wind_direction, wind_gust, precipitation,
+			cloud_cover, visibility, retrieved_at
+		FROM weather_observation
+		WHERE time >= $1 AND time < $2
+		ORDER BY time
+	`, start, end)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []domain.WeatherObservation
+	for rows.Next() {
+		var o domain.WeatherObservation
+		if err := rows.Scan(
+			&o.Time, &o.StationFMISID, &o.AirTemperature, &o.RelativeHumidity, &o.DewPoint,
+			&o.AirPressure, &o.WindSpeed, &o.WindDirection, &o.WindGust, &o.Precipitation,
+			&o.CloudCover, &o.Visibility, &o.RetrievedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, rows.Err()
 }

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -14,6 +15,37 @@ type CollectorRepository struct {
 
 func NewCollectorRepository(pool *pgxpool.Pool) *CollectorRepository {
 	return &CollectorRepository{pool: pool}
+}
+
+type CollectorStatus struct {
+	Name          string
+	Status        string
+	LastSuccessAt *time.Time
+	LastError     *string
+	LastErrorAt   *time.Time
+	UpdatedAt     time.Time
+}
+
+func (r *CollectorRepository) List(ctx context.Context) ([]CollectorStatus, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT name, status, last_success_at, last_error, last_error_at, updated_at
+		FROM collector
+		ORDER BY name
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []CollectorStatus
+	for rows.Next() {
+		var c CollectorStatus
+		if err := rows.Scan(&c.Name, &c.Status, &c.LastSuccessAt, &c.LastError, &c.LastErrorAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func (r *CollectorRepository) RecordSuccess(ctx context.Context, name string) error {

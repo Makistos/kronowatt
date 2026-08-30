@@ -13,16 +13,21 @@ only public internet access. What's real:
   tracking — implemented and verified end-to-end against the real FMI API
   and a real TimescaleDB container (`go run ./cmd/server collect weather`
   for one-shot testing; runs continuously inside `go run ./cmd/server` via
-  `internal/scheduler`). `internal/collectors/{cozify,spotprice,ev}` and
-  `internal/{analysis,api}` are still empty stubs. Config is env-var based
-  (`internal/config`) — see "Configuration" below.
+  `internal/scheduler`). A REST API (`internal/api`) now serves what's
+  collected — `GET /health` (collector status + disk usage) and
+  `GET /api/weather/observations` — see "REST API" below.
+  `internal/collectors/{cozify,spotprice,ev}` and `internal/analysis` are
+  still empty stubs. Config is env-var based (`internal/config`) — see
+  "Configuration" below.
 - `frontend/`: a real dashboard exists (`src/routes/+page.svelte`) —
   year/compare-year filters, KPI tiles, monthly consumption (grouped bars),
   a temperature-vs-consumption scatter, daily electricity/spot-price lines,
-  and EV monthly energy, all built against the fake-data fixtures (no
-  backend API to talk to yet). Chart components live in `src/lib/charts/`
-  — see "Frontend dashboard" below for the dataviz approach and what's not
-  done (dark-mode rendering unverified — see that section).
+  and EV monthly energy — still built against the fake-data fixtures, not
+  the new real API yet (that swap hasn't been done). Chart components live
+  in `src/lib/charts/` — see "Frontend dashboard" below for the dataviz
+  approach and what's not done (dark-mode rendering unverified — see that
+  section). Localized via `svelte-i18n`, English only so far — see
+  "Frontend localization".
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -103,6 +108,42 @@ itself, is what wires a collector to storage.
 Logging is `log/slog` with the default text handler (`slog.Default()`),
 used for anything recurring/collector-related; plain `log.Fatal` is still
 fine for one-shot startup failures in `main()`.
+
+## REST API
+
+`internal/api.NewRouter(pool, diskCheckPath)` builds the `http.Handler`
+`cmd/server` serves — it depends only on `storage` repositories, never on
+collector internals (spec §2.5), and is the only package that knows about
+JSON wire shapes (DTOs are defined per-handler file, e.g.
+`weatherObservationDTO` in `weather.go`, kept separate from the `domain`
+structs storage returns).
+
+- `GET /health` — collector status (from the `collector` table) plus disk
+  usage (`syscall.Statfs` on `KRONOWATT_DISK_CHECK_PATH`, default `/` — the
+  target box has one SSD per spec §9a, so any path reflects overall
+  pressure). Reports `"degraded"` if any collector's status is `"error"` or
+  disk usage is ≥80% (spec §9a/§44.17's threshold) — verified live against
+  a real container (13.9% disk usage, `fmi_observation` status `"ok"`).
+- `GET /api/weather/observations` — real rows from `weather_observation`.
+  Takes either `?year=2025` (maps to `[Jan 1, Jan 1 next year)` UTC —
+  chosen to mirror how the frontend's fake-data fixtures are split one file
+  per year, since that's the shape a future real-data frontend integration
+  will want) or explicit `?start=...&end=...` (RFC3339). Both forms share
+  `parseDateRange` in `daterange.go` — reuse it for any future time-series
+  endpoint rather than re-implementing range parsing per handler. Verified
+  live: real FMI data round-tripped through the API with all fields
+  present, missing params correctly 400, malformed `year` correctly 400.
+- CORS is wide open (`Access-Control-Allow-Origin: *`) for all GET/OPTIONS
+  requests. Deliberate, not an oversight: frontend and backend are separate
+  services on separate ports even in production (spec §9's deployment
+  split), and this is a LAN-only app (spec §1) — an allowlist would just be
+  one more thing to keep in sync with whatever host/port the frontend is
+  served from, for little real security benefit here.
+- **Not yet done**: the frontend dashboard still reads the fake-data JSON
+  fixtures, not this API — swapping `src/lib/fakeData.ts`'s loaders for
+  real `fetch('/api/...')` calls (behind a dev-time proxy or absolute
+  backend URL) is a separate task. Electricity/spot-price/contract/EV
+  endpoints don't exist yet because those collectors don't exist yet.
 
 ## What this system is
 
