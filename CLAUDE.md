@@ -16,10 +16,13 @@ only public internet access. What's real:
   `internal/scheduler`). `internal/collectors/{cozify,spotprice,ev}` and
   `internal/{analysis,api}` are still empty stubs. Config is env-var based
   (`internal/config`) — see "Configuration" below.
-- `frontend/`: SvelteKit 5 + TypeScript skeleton, `npm run build` and
-  `npm run check` pass clean. No charts/dashboard/API integration yet — see
-  "Fake data for frontend development" below for how to get test data to
-  build against in the meantime.
+- `frontend/`: a real dashboard exists (`src/routes/+page.svelte`) —
+  year/compare-year filters, KPI tiles, monthly consumption (grouped bars),
+  a temperature-vs-consumption scatter, daily electricity/spot-price lines,
+  and EV monthly energy, all built against the fake-data fixtures (no
+  backend API to talk to yet). Chart components live in `src/lib/charts/`
+  — see "Frontend dashboard" below for the dataviz approach and what's not
+  done (dark-mode rendering unverified — see that section).
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -247,6 +250,47 @@ Modeling choices worth knowing if this needs adjusting:
   normals.
 - Spot price and EV sessions are generated independently of the
   temperature/consumption model (no cross-correlation with weather).
+
+## Frontend dashboard
+
+`src/routes/+page.svelte` fetches manifest + per-year fixtures client-side
+(`onMount`, no SvelteKit `load` function) rather than at prerender time —
+deliberate, since `static/fake-data/` is gitignored and generated on demand;
+coupling it to SSR/prerendering would either bake in stale data or break a
+fresh clone's `npm run build`. If fetching fails (fixtures not generated),
+the page shows instructions to run `npm run generate:fake-data` instead of
+a raw error.
+
+Chart components (`src/lib/charts/`) are hand-rolled inline SVG, not a
+charting library — built by following the `dataviz` skill's method
+end-to-end rather than improvising:
+- Color is the validated default palette from the skill's `palette.md`,
+  copied verbatim into `src/app.css` as CSS custom properties (`--series-1`
+  … `--series-8`, plus text/surface/gridline tokens for light and dark).
+  Re-ran the skill's `validate_palette.js` against both modes after
+  copying — both pass. Only slots 1-2 (blue/orange) are actually used, for
+  year-over-year comparison; the palette's light-mode contrast WARN
+  (slots 3/4/5 — aqua/yellow/magenta) doesn't apply here because nothing
+  uses those slots as a series encoding yet.
+- Monthly views are grouped bar charts (`MonthlyBarChart.svelte`) with a
+  table-view toggle (the skill's accessibility-twin requirement). Daily
+  views are multi-series line charts with a shared crosshair + one tooltip
+  listing every series (`DailyLineChart.svelte`). The temperature vs.
+  consumption relationship is a scatter plot (`ScatterChart.svelte`), not
+  two line charts on a dual axis — the skill flags dual-axis charts as the
+  single most common charting mistake, and a scatter is the honest form for
+  "does X relate to Y," which is exactly what connects them.
+- **Not verified**: dark mode. This sandbox's headless Chrome doesn't honor
+  `prefers-color-scheme` emulation via CLI flags (confirmed with a minimal
+  `matchMedia` test — a tooling limitation, not something to fix in the
+  app), so only light mode has actually been screenshotted. The dark CSS
+  values follow the skill's documented pattern exactly (same selectors as
+  `palette.md`'s example) but haven't been visually confirmed — check this
+  in a real browser before trusting it.
+- Legend/tooltip identity is always color + text label together (never
+  color-only), per the skill's "text never wears the data color" rule —
+  legend swatches and tooltip series-keys are small colored rects/lines
+  beside plain-ink text, not colored text.
 
 ## Migrations
 
