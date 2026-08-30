@@ -1,0 +1,22 @@
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: kronowatt-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kronowatt
+      POSTGRES_USER: kronowatt
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    secrets:
+      - db_password
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
+
+volumes:
+  timescaledb-data:

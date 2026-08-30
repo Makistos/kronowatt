@@ -1,0 +1,15 @@
+[Unit]
+Description=Kronowatt frontend static file server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 -m http.server 8081 --directory /opt/kronowatt/frontend
+WorkingDirectory=/opt/kronowatt/frontend
+Restart=on-failure
+RestartSec=5
+User=kronowatt
+Group=kronowatt
+
+[Install]
+WantedBy=multi-user.target

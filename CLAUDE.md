@@ -1,0 +1,193 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Current state
+
+This repository currently contains only `kronowatt_spec_v1.1.md` — the full
+implementation specification. **No code has been written yet.** There is no
+`backend/`, `frontend/`, or `deployment/` directory, no build tooling, and no
+tests. Treat the spec as the source of truth for everything below; when it
+and this file disagree, the spec wins (it is versioned — check for a newer
+`kronowatt_spec_v*.md` before starting work).
+
+Because nothing is implemented, there are no build/lint/test commands to
+document yet. Once the Go backend and SvelteKit frontend exist, add their
+actual commands here (`go build ./...`, `go test ./...`, `npm run build`,
+etc.) rather than guessing them now.
+
+## What this system is
+
+A local-first home energy monitoring and analysis system for a single
+household, deployed on one dedicated machine (Fujitsu Esprimo Q510, Debian
+13, 30GB SSD, ~22GB free). It collects, stores, and analyzes:
+
+- electricity measurements from a Cozify HAN interface (local WebSocket/REST)
+- weather observations/forecasts from FMI
+- Finnish electricity spot prices
+- manually-entered electricity contract terms
+- EV charging data from a Defa Power charger via an unofficial cloud API (the
+  one deliberate exception to local-first)
+
+Read `kronowatt_spec_v1.1.md` in full before implementing any part of this
+system — it is dense and implementation decisions in one section (e.g.
+storage budget, §9a) constrain choices in others (e.g. retention policy,
+compression, schema design).
+
+## Core architectural principles (§2)
+
+These are load-bearing constraints, not suggestions:
+
+- **Local-first**: all data lives locally; external services are sources,
+  not the database of record. The system must keep working when an external
+  API is down. The sole exception is the EV/Defa collector, which is
+  cloud-dependent by necessity and must be fully isolated — its failure,
+  rate-limiting, or expired auth must never affect any other collector or
+  the rest of the app.
+- **Raw preservation, budget-bounded**: collectors normalize source data into
+  domain models but also keep raw payloads — subject to the storage budget
+  in §9a, not unconditionally forever. Never store auth tokens/secrets
+  inside a raw payload (especially the Defa cloud token).
+- **Time-series first**: timestamps/intervals are first-class across every
+  data type.
+- **Historical correctness**: cost calculations must use the contract/price
+  rules valid at the time in question. Editing or adding a current contract
+  must never retroactively change historical results.
+- **Provider isolation**: each external source sits behind its own
+  provider/collector interface (`Cozify HAN -> ElectricityProvider`,
+  `FMI -> WeatherProvider`, `spot price provider -> SpotPriceProvider`,
+  `Defa cloud -> EVProvider`) feeding a shared internal model. Provider-
+  specific API shapes must not leak into the rest of the application.
+- **Idempotent collection**: re-running a collector must never create
+  duplicate logical measurements — enforce via source identifiers and/or DB
+  uniqueness constraints, not application-level dedup logic alone.
+- **Explainable, deterministic calculations**: no ML in the initial
+  implementation; every cost/analysis number must be traceable to inputs.
+
+## Planned repository structure (§10)
+
+```
+kronowatt/
+├── backend/
+│   ├── cmd/server/
+│   ├── internal/
+│   │   ├── collectors/{cozify,weather,spotprice,ev}/
+│   │   ├── domain/
+│   │   ├── storage/
+│   │   ├── analysis/
+│   │   ├── api/
+│   │   ├── scheduler/
+│   │   └── config/
+│   └── migrations/
+├── frontend/
+│   └── src/
+├── deployment/
+│   ├── docker-compose.yml        -- TimescaleDB only
+│   ├── kronowatt-backend.service
+│   ├── kronowatt-frontend.service
+│   └── deploy.sh                 -- rsync/scp build artifacts to the box
+├── docs/
+└── README.md
+```
+
+Each collector directory under `internal/collectors/` should stay behind its
+provider interface and not be imported directly by `api/` or `analysis/` —
+those should depend on `domain`/`storage`, not on collector internals.
+
+## Technology stack (§9)
+
+- **Backend**: Go, standard `net/http` stack, pgx driver, a migration
+  framework, structured logging, `context.Context` throughout, standard
+  `testing` (avoid unnecessary frameworks). Compiles to a single static
+  binary, built on the dev machine and copied to the target box.
+- **Database**: TimescaleDB on PostgreSQL. Native compression is mandatory
+  from the *first* migration (compress chunks older than ~3–7 days) — this
+  is what makes 5+ years of data fit the 22GB budget. Do not treat
+  compression as a later optimization.
+- **Frontend**: SvelteKit + TypeScript, prebuilt to static assets on the dev
+  machine, served by a small static file server (or the backend) on-target.
+  Talks only to the backend API.
+- **Deployment**: hybrid, not full containerization. Only TimescaleDB runs in
+  Docker (for extension/version management and `pg_dump`/`pg_basebackup`
+  tooling); the Go backend and frontend static server run as systemd
+  services from build artifacts. See §9 for the full rationale table.
+
+## Storage budget (§9a) — a real constraint, not boilerplate
+
+30GB disk, ~22GB free, this service only, fixed overhead ~2.5–4GB. Electricity
+data (Cozify, ~10s samples) dominates growth and is the only source worth
+budgeting carefully — expect ~150–400MB/year *with* compression vs.
+~1–1.5GB/year without it. Retention policy (replaces any "keep everything
+forever" assumption):
+
+```
+Electricity, spot prices, contracts: permanent, compressed after ~7 days
+Weather observations:                permanent, compressed after ~7 days
+Weather forecasts:                   1-2 years, then dropped
+Raw payloads:                        configurable cap (default: keep;
+                                      revisit if disk usage crosses ~70%)
+Logs:                                7 days, size-capped
+```
+
+The health endpoint must expose disk usage and report "degraded" above ~80%
+usage (§35/§44.17). When adding any new persistent data path, check it
+against this budget and retention table rather than defaulting to "store
+everything forever."
+
+## Source-specific notes worth remembering
+
+- **Cozify HAN (§3)**: primary collection is via WebSocket (`/ws`,
+  `HAN_METER_MESSAGE` events, ~10s device sampling). The device also exposes
+  on-device rolling history (`/history/hourly|weekly|monthly|yearly` at
+  decreasing resolution) — use it to backfill gaps on collector
+  startup/reconnect instead of leaving holes in the timeseries. No auth is
+  needed for read access. Do not invent fields beyond what a live device
+  response actually contains; the field list in §3.2 is provisional pending
+  confirmation against real hardware. Don't hard-code the device's IP —
+  make host configurable.
+- **FMI weather (§4)**: fixed observation station (Oulu lentoasema,
+  FMISID 101786) plus point forecasts for the user's actual coordinates.
+  Forecast versions must never be overwritten — old forecasts are needed
+  later for forecast-accuracy evaluation. Missing one optional weather
+  parameter must not fail the whole observation.
+- **Spot prices (§5)**: model as 15-minute intervals
+  (`interval_start, interval_end, price, ...`), not points. Distinguish
+  "when the price applies" from "when the app learned it" — store both.
+- **Contracts (§6)**: manually entered, support multiple price periods per
+  contract, effective price resolved by timestamp, historical contract data
+  immutable unless explicitly edited by the user.
+- **EV / Defa Power (§7)**: no official API exists. The only integration
+  path is the community `ha-defa-power` project against Defa's unofficial,
+  reverse-engineered CloudCharge cloud API (rate-limited, can break without
+  notice). This collector is read-only (no charge control), must poll
+  conservatively (1–5 min, backing off when idle), and must degrade
+  independently — health status should show a specific "EV: degraded /
+  needs re-auth" state rather than a generic error. Expect to build a manual
+  re-auth flow for token expiry.
+- **Backups (§40)**: off-box only — `pg_dump`/`pg_basebackup` pushed to the
+  dev rig, then synced offsite. No long-term backup retention lives on the
+  target box itself (the 22GB budget is for live data). Restore procedure
+  must be tested on the dev rig, not just the target box.
+
+## Implementation sequence (§43)
+
+The spec defines an explicit build order — Step 0 (environment/storage
+policy) → Step 1 (repo/build) → Step 2 (DB/migrations) → Step 3 (Cozify) →
+Step 4 (FMI) → Step 5 (spot price) → Step 6 (contracts) → Step 7 (cost
+engine) → Step 8 (frontend MVP) → Step 9 (EV) → Step 10 (analysis) → Step 11
+(Fingrid, optional) → Step 12 (forecasting, later). Each step lists its own
+deliverable in the spec. Follow this order for greenfield work unless the
+user directs otherwise — later steps (e.g. cost engine, contract simulation)
+assume earlier ones (contracts, spot prices, electricity measurements) are
+already in place.
+
+## Sections referenced but not expanded in v1.1
+
+§§13–38 (time handling, normalization, collector architecture, data quality,
+missing-data handling, cost engine, contract-vs-spot simulation,
+consumption-weighted spot price, weather correlation, heating degree
+calculation, REST API design, frontend MVP/design/dashboards, auth/security,
+configuration, logging, monitoring, migrations, testing) are carried forward
+unchanged from spec v1.0, which is not present in this repo. If detail beyond
+what v1.1 restates is needed for one of these areas, ask the user for the
+v1.0 document rather than inventing the missing detail.

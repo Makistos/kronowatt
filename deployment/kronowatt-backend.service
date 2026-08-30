@@ -1,0 +1,17 @@
+[Unit]
+Description=Kronowatt backend
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/kronowatt/backend/kronowatt-server
+WorkingDirectory=/opt/kronowatt/backend
+EnvironmentFile=/opt/kronowatt/backend/kronowatt.env
+Restart=on-failure
+RestartSec=5
+User=kronowatt
+Group=kronowatt
+
+[Install]
+WantedBy=multi-user.target
