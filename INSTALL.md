@@ -84,7 +84,39 @@ The full core schema exists (all spec §11 domain tables, hypertables,
 compression/retention policies per §9a) — see `CLAUDE.md` for the table
 list and design notes.
 
+## 4a. Seeding test data (optional, dev/testing only)
+
+Real collectors only exist for weather so far (spec §43 Steps 3/5/9 —
+Cozify/spot-price/EV — aren't implemented). To get multi-year data into
+every table for testing without those collectors, generate the fake-data
+fixtures on the dev machine and seed them into the real database:
+
+```
+cd frontend && npm run generate:fake-data && cd ../backend
+KRONOWATT_DB_DSN='postgres://kronowatt:<password>@127.0.0.1:5432/kronowatt?sslmode=disable' \
+  go run ./cmd/server seed ../frontend/static/fake-data
+```
+
+Seeded rows are tagged (`source = "fake_seed"`, or `station_fmisid = "fake"`
+for weather, which has no `source` column) so they never collide with real
+collected data — see `CLAUDE.md` "Seeding fake data into the real database"
+for the full mapping. Skip this entirely for a production install; it's
+purely for exercising the API/frontend before real collectors exist for
+everything.
+
 ## 5. Build and deploy the backend + frontend
+
+The frontend fetches the backend API from `VITE_API_BASE_URL`, a Vite
+build-time env var (default `http://localhost:8080` — only correct for
+local dev). Set it to wherever the backend will actually be reachable
+*before* building — adapter-static has no server to read env vars at
+runtime, so this can't be fixed after the fact without rebuilding:
+
+```
+cd frontend && cp .env.example .env
+# edit .env: VITE_API_BASE_URL=http://<box hostname or IP>:8080
+cd ..
+```
 
 From the repo root, on the dev machine:
 

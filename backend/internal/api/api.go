@@ -15,10 +15,17 @@ import (
 func NewRouter(pool *pgxpool.Pool, diskCheckPath string) http.Handler {
 	weatherRepo := storage.NewWeatherRepository(pool)
 	collectorRepo := storage.NewCollectorRepository(pool)
+	electricityRepo := storage.NewElectricityRepository(pool)
+	spotPriceRepo := storage.NewSpotPriceRepository(pool)
+	evRepo := storage.NewEVRepository(pool)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(collectorRepo, diskCheckPath))
+	mux.HandleFunc("GET /api/meta/years", yearsHandler(electricityRepo))
 	mux.HandleFunc("GET /api/weather/observations", weatherObservationsHandler(weatherRepo))
+	mux.HandleFunc("GET /api/electricity/measurements", electricityMeasurementsHandler(electricityRepo))
+	mux.HandleFunc("GET /api/spot-prices", spotPricesHandler(spotPriceRepo))
+	mux.HandleFunc("GET /api/ev/sessions", evSessionsHandler(evRepo))
 
 	return withCORS(mux)
 }

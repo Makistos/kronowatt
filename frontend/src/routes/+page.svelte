@@ -1,17 +1,16 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import {
-		loadManifest,
+		loadYears,
 		loadElectricity,
 		loadWeather,
 		loadSpotPrice,
 		loadEvSessions,
-		type Manifest,
 		type ElectricityRow,
 		type WeatherRow,
 		type SpotPriceRow,
 		type EvSession
-	} from '$lib/fakeData';
+	} from '$lib/api';
 	import { MONTH_KEYS, monthlySums, dailySeries } from '$lib/aggregate';
 	import { formatCompact, formatNumber } from '$lib/format';
 	import { _ as translate, locale } from 'svelte-i18n';
@@ -29,8 +28,8 @@
 
 	const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)'];
 
-	let manifest = $state<Manifest | null>(null);
-	let manifestError = $state<string | null>(null);
+	let availableYears = $state<number[] | null>(null);
+	let yearsError = $state<string | null>(null);
 	let year = $state<number | null>(null);
 	let compareYear = $state<number | null>(null);
 
@@ -39,12 +38,12 @@
 
 	onMount(async () => {
 		try {
-			manifest = await loadManifest();
-			const years = manifest.years;
+			const years = await loadYears();
+			availableYears = years;
 			year = years.at(-1) ?? null;
 			compareYear = years.length > 1 ? years.at(-2)! : null;
 		} catch (e) {
-			manifestError = e instanceof Error ? e.message : String(e);
+			yearsError = e instanceof Error ? e.message : String(e);
 		}
 	});
 
@@ -177,21 +176,20 @@
 <div class="page">
 	<h1>{$translate('dashboard.title')}</h1>
 
-	{#if manifestError}
+	{#if yearsError}
 		<div class="empty-state">
 			<p><strong>{$translate('emptyState.heading')}</strong></p>
 			<p>{$translate('emptyState.instructions')}</p>
-			<pre>npm run generate:fake-data</pre>
-			<p class="error-detail">{manifestError}</p>
+			<p class="error-detail">{yearsError}</p>
 		</div>
-	{:else if !manifest}
+	{:else if !availableYears}
 		<p class="muted">{$translate('dashboard.loading')}</p>
 	{:else}
 		<div class="filters">
 			<label>
 				{$translate('dashboard.year')}
 				<select value={year} onchange={onYearChange}>
-					{#each manifest.years as y (y)}
+					{#each availableYears as y (y)}
 						<option value={y}>{y}</option>
 					{/each}
 				</select>
@@ -200,7 +198,7 @@
 				{$translate('dashboard.compareWith')}
 				<select value={compareYear ?? ''} onchange={onCompareChange}>
 					<option value="">{$translate('dashboard.none')}</option>
-					{#each manifest.years.filter((y) => y !== year) as y (y)}
+					{#each availableYears.filter((y) => y !== year) as y (y)}
 						<option value={y}>{y}</option>
 					{/each}
 				</select>
@@ -322,12 +320,6 @@
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		padding: 20px;
-	}
-	.empty-state pre {
-		background: var(--page-plane);
-		padding: 10px 12px;
-		border-radius: 6px;
-		display: inline-block;
 	}
 	.error-detail {
 		font-size: 12px;

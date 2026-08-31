@@ -7,8 +7,8 @@
 		"loading": "Loading…"
 	},
 	"emptyState": {
-		"heading": "No fake data found.",
-		"instructions": "Run this from the frontend/ directory, then reload:"
+		"heading": "No data available.",
+		"instructions": "Make sure the backend is running and reachable, and that the database has been seeded (see INSTALL.md)."
 	},
 	"kpi": {
 		"annualConsumption": "Annual consumption",

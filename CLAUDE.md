@@ -13,21 +13,25 @@ only public internet access. What's real:
   tracking — implemented and verified end-to-end against the real FMI API
   and a real TimescaleDB container (`go run ./cmd/server collect weather`
   for one-shot testing; runs continuously inside `go run ./cmd/server` via
-  `internal/scheduler`). A REST API (`internal/api`) now serves what's
-  collected — `GET /health` (collector status + disk usage) and
-  `GET /api/weather/observations` — see "REST API" below.
+  `internal/scheduler`). A REST API (`internal/api`) serves electricity,
+  weather, spot price, and EV session data plus health — see "REST API"
+  below. A `seed` subcommand loads the frontend's fake-data fixtures into
+  the real database for end-to-end testing without real collectors for
+  everything — see "Seeding fake data into the real database".
   `internal/collectors/{cozify,spotprice,ev}` and `internal/analysis` are
-  still empty stubs. Config is env-var based (`internal/config`) — see
-  "Configuration" below.
+  still empty stubs (no real spot-price or EV collector exists — only
+  weather does — so `spot_price`/`ev_charging_session` only ever have
+  seeded fake rows unless you run one manually). Config is env-var based
+  (`internal/config`) — see "Configuration" below.
 - `frontend/`: a real dashboard exists (`src/routes/+page.svelte`) —
   year/compare-year filters, KPI tiles, monthly consumption (grouped bars),
   a temperature-vs-consumption scatter, daily electricity/spot-price lines,
-  and EV monthly energy — still built against the fake-data fixtures, not
-  the new real API yet (that swap hasn't been done). Chart components live
-  in `src/lib/charts/` — see "Frontend dashboard" below for the dataviz
-  approach and what's not done (dark-mode rendering unverified — see that
-  section). Localized via `svelte-i18n`, English only so far — see
-  "Frontend localization".
+  and EV monthly energy — now fetches from the real backend API
+  (`src/lib/api.ts`), not static fake-data JSON (that file, `fakeData.ts`,
+  is gone). Chart components live in `src/lib/charts/` — see "Frontend
+  dashboard" below for the dataviz approach and what's not done (dark-mode
+  rendering unverified — see that section). Localized via `svelte-i18n`,
+  English only so far — see "Frontend localization".
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -124,26 +128,74 @@ structs storage returns).
   pressure). Reports `"degraded"` if any collector's status is `"error"` or
   disk usage is ≥80% (spec §9a/§44.17's threshold) — verified live against
   a real container (13.9% disk usage, `fmi_observation` status `"ok"`).
-- `GET /api/weather/observations` — real rows from `weather_observation`.
-  Takes either `?year=2025` (maps to `[Jan 1, Jan 1 next year)` UTC —
-  chosen to mirror how the frontend's fake-data fixtures are split one file
-  per year, since that's the shape a future real-data frontend integration
-  will want) or explicit `?start=...&end=...` (RFC3339). Both forms share
-  `parseDateRange` in `daterange.go` — reuse it for any future time-series
-  endpoint rather than re-implementing range parsing per handler. Verified
-  live: real FMI data round-tripped through the API with all fields
-  present, missing params correctly 400, malformed `year` correctly 400.
+- `GET /api/weather/observations`, `GET /api/electricity/measurements`,
+  `GET /api/spot-prices`, `GET /api/ev/sessions` — real rows from the
+  corresponding table. All take either `?year=2025` (maps to
+  `[Jan 1, Jan 1 next year)` UTC — chosen to mirror how the frontend's
+  fake-data fixtures split one file per year) or explicit
+  `?start=...&end=...` (RFC3339), sharing `parseDateRange` in
+  `daterange.go` — reuse it for any future time-series endpoint rather
+  than re-implementing range parsing per handler.
+- `GET /api/meta/years` — distinct years present in
+  `electricity_measurement` (the "spine" dataset), so the frontend can
+  discover what's available instead of hardcoding a year list.
+- The electricity DTO derives `power_kw`/`energy_kwh` from `p[0]`, since
+  the table stores raw Cozify-shaped fields (`ic`, `p[]`, …), not a
+  pre-computed energy value. That derivation is only correct for
+  hourly-bucketed rows (the seeded fake data) — real ~10s Cozify samples
+  will need actual time-integration for energy, not this shortcut. See the
+  comment on `electricityMeasurementDTO` before touching it.
 - CORS is wide open (`Access-Control-Allow-Origin: *`) for all GET/OPTIONS
   requests. Deliberate, not an oversight: frontend and backend are separate
   services on separate ports even in production (spec §9's deployment
   split), and this is a LAN-only app (spec §1) — an allowlist would just be
   one more thing to keep in sync with whatever host/port the frontend is
   served from, for little real security benefit here.
-- **Not yet done**: the frontend dashboard still reads the fake-data JSON
-  fixtures, not this API — swapping `src/lib/fakeData.ts`'s loaders for
-  real `fetch('/api/...')` calls (behind a dev-time proxy or absolute
-  backend URL) is a separate task. Electricity/spot-price/contract/EV
-  endpoints don't exist yet because those collectors don't exist yet.
+- Verified live against a real TimescaleDB container: real FMI data and
+  seeded fake electricity/spot-price/EV data all round-tripped through
+  their endpoints with correct fields; missing/malformed params correctly
+  400; the frontend dashboard rendered from these endpoints end-to-end
+  (screenshotted), and correctly showed its empty-state error (not stale
+  cached data) when the backend was killed mid-session.
+- **Not yet done**: no contract endpoints (no `electricity_contract` table
+  data exists, seeded or real — the fake-data generator doesn't produce
+  contracts). No real spot-price or EV collectors, so those two tables only
+  ever have seeded fake rows today.
+
+## Seeding fake data into the real database
+
+`go run ./cmd/server seed [dir]` (default `dir`:
+`../frontend/static/fake-data`, i.e. run from `backend/`) reads the Node
+generator's JSON output and inserts it into `electricity_measurement`,
+`weather_observation`, `spot_price`, and `ev_charging_session` — so the API
+(and the frontend, which now talks to the API, not the JSON files directly)
+has multi-year data without needing real collectors for everything. This is
+dev/test tooling, not a spec feature: the generator's fixtures are the seed
+source specifically so there's one definition of "what the synthetic
+dataset looks like," not a duplicated one in Go.
+
+Every seeded row is tagged to keep it identifiable and non-colliding with
+real collected data:
+- `electricity_measurement.source` / `spot_price.source` /
+  `ev_charging_session.source` = `"fake_seed"` — including for EV, where
+  the generator's own JSON says `source: "defa_cloud"`; the seed command
+  deliberately overrides that so a seeded session can never be confused
+  with a real Defa one sharing that label.
+- `weather_observation.station_fmisid` = `"fake"`, not the real `"101786"`
+  — weather has no `source` column, so the station id is the only
+  available marker. Verified live: seeding fake weather rows and running
+  the real FMI collector at the same time produced no collisions (real
+  data goes to `101786`, fake to `"fake"`).
+- Electricity's `ic` (cumulative imported energy) is synthesized as a
+  running sum of the fake data's hourly `energy_kwh` — verified live that
+  the cumulative total at year-end matches the generator's own reported
+  annual kWh.
+
+The command does per-row `INSERT ... ON CONFLICT DO NOTHING` (same
+idempotency pattern as the collectors), so re-running it is safe but slow
+(~20s for two years — a few tens of thousands of individual round trips,
+not batched). Fine for occasional dev seeding; would need a bulk-insert
+path (e.g. `COPY`) if this ever needs to run often or on much more data.
 
 ## What this system is
 
@@ -263,17 +315,21 @@ usage (§35/§44.17). When adding any new persistent data path, check it
 against this budget and retention table rather than defaulting to "store
 everything forever."
 
-## Fake data for frontend development
+## Fake data generation
 
-There is no backend API yet, so `frontend/scripts/generate-fake-data.mjs`
-generates static JSON fixtures instead — a stand-in until spec §43 Step 8
-exists, not a preview of the real API's response shape. Run
+`frontend/scripts/generate-fake-data.mjs` produces the synthetic dataset
+used to seed the real database (see "Seeding fake data into the real
+database") — its original purpose (something the browser fetched directly,
+before the backend/API existed) is gone, but the generator itself is still
+the one source of truth for "what the synthetic dataset looks like." Run
 `npm run generate:fake-data` (optionally `-- --start-year 2020 --end-year
 2025 --annual-kwh 12000 --ev-sessions-per-week 3 --ev-kwh-per-session 35`)
 to (re)generate `frontend/static/fake-data/{electricity,weather,spot_price,
-ev_sessions}_{year}.json` plus a `manifest.json` listing the years/params
-used. Output is gitignored and deterministic per `--seed` (default 42) —
-regenerate rather than editing the JSON by hand.
+ev_sessions}_{year}.json` plus a `manifest.json` (read by
+`backend/cmd/server seed`, not by the frontend anymore). Output is
+gitignored and deterministic per `--seed` (default 42) — regenerate rather
+than editing the JSON by hand, then re-run `seed` to load the changes into
+the database.
 
 Modeling choices worth knowing if this needs adjusting:
 - Hourly resolution, not the real 10s Cozify sampling rate — a full year at
@@ -294,13 +350,30 @@ Modeling choices worth knowing if this needs adjusting:
 
 ## Frontend dashboard
 
-`src/routes/+page.svelte` fetches manifest + per-year fixtures client-side
-(`onMount`, no SvelteKit `load` function) rather than at prerender time —
-deliberate, since `static/fake-data/` is gitignored and generated on demand;
-coupling it to SSR/prerendering would either bake in stale data or break a
-fresh clone's `npm run build`. If fetching fails (fixtures not generated),
-the page shows instructions to run `npm run generate:fake-data` instead of
-a raw error.
+`src/routes/+page.svelte` fetches available years + per-year data
+client-side (`onMount`, no SvelteKit `load` function) from the real backend
+via `src/lib/api.ts`, rather than at prerender time — deliberate, since the
+backend/DB may not be reachable at build time (this is a static-adapter
+site with no server-side rendering of live data), so coupling data
+fetching to SSR/prerendering would either bake in stale data or break a
+build with no backend running. If fetching fails (backend down, or DB not
+seeded), the page shows an explanatory empty state instead of a raw error
+or, worse, silently showing nothing — verified live by killing the backend
+mid-session and confirming the error state renders (not stale data).
+
+`api.ts` talks to `VITE_API_BASE_URL` (default `http://localhost:8080`,
+see `.env.example`) — a Vite build-time env var, since adapter-static has
+no server to read env vars at runtime; a production deploy must set this
+*before* `npm run build`, not after. It also adapts the backend's richer
+DTOs (e.g. electricity's raw `ic`/`p[]` fields) back into the simple
+`{time, value}` shapes `aggregate.ts` and the charts already expect, so
+switching from the old fake-data fixtures to the real API didn't require
+touching the aggregation/chart code at all — only the data-loading layer.
+The old `fakeData.ts` (fetching `/fake-data/*.json` directly) is gone;
+`frontend/scripts/generate-fake-data.mjs` and its output are still very
+much alive, just repurposed as the seed source for the real database (see
+"Seeding fake data into the real database") rather than something the
+browser fetches directly.
 
 Chart components (`src/lib/charts/`) are hand-rolled inline SVG, not a
 charting library — built by following the `dataviz` skill's method

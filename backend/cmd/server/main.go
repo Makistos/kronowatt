@@ -24,6 +24,9 @@ func main() {
 		case "collect":
 			runCollect(os.Args[2:])
 			return
+		case "seed":
+			runSeed(os.Args[2:])
+			return
 		}
 	}
 	runServer()
