@@ -28,10 +28,14 @@ only public internet access. What's real:
   (`internal/config`) — see "Configuration" below.
 - `frontend/`: a real dashboard exists (`src/routes/+page.svelte`) —
   year/compare-year filters, KPI tiles, monthly consumption (grouped bars),
-  a temperature-vs-consumption scatter, daily electricity/spot-price lines,
-  and EV monthly energy — now fetches from the real backend API
-  (`src/lib/api.ts`), not static fake-data JSON (that file, `fakeData.ts`,
-  is gone). Chart components live in `src/lib/charts/` — see "Frontend
+  a temperature-vs-consumption scatter, and daily electricity/spot-price
+  lines — fetches from the real backend API (`src/lib/api.ts`), not static
+  fake-data JSON (that file, `fakeData.ts`, is gone). No EV tab/KPI —
+  removed on explicit instruction since there's no real EV collector to
+  back it (see "EV tab removed" below); `loadEvSessions`/`EvSession` stay
+  in `api.ts` and the backend's EV endpoint/schema/seed data are untouched,
+  ready for whenever Step 9 happens. Chart components live in
+  `src/lib/charts/` — see "Frontend
   dashboard" below for the dataviz approach and what's not done (dark-mode
   rendering unverified — see that section). A "Settings" button/dialog
   (`src/lib/SettingsDialog.svelte`, global in `+layout.svelte`) lets the
@@ -466,8 +470,8 @@ end-to-end rather than improvising:
 The dashboard's Electricity tab (`src/lib/charts/ElectricityChart.svelte` +
 `ElectricityBarChart.svelte`) is the one chart with its own independent
 controls — resolution, phase breakdown, comparison, date picker(s) — rather
-than using the page-level Year/Compare filters that the other three tabs
-(Weather, Spot price, EV) still share. It replaced the old separate
+than using the page-level Year/Compare filters that the other tabs
+(Weather, Spot price) still share. It replaced the old separate
 "Monthly electricity consumption" and "Daily electricity consumption"
 charts entirely.
 
@@ -756,6 +760,48 @@ in `+page.svelte` set `year` without checking `compareYear` — got the same
 select set to match the existing Compare-with value, and per-tab Primary/
 Compare year selects both set to the same year) no longer throws; the
 compare option simply isn't offered once it matches the primary selection.
+
+## EV tab removed
+
+The dashboard originally had a fourth tab ("EV charging", a monthly bar
+chart via `MonthlyBarChart`) plus an "EV charging" KPI tile, both driven by
+`ev_charging_session` — which, per "Current state", only ever has seeded
+fake rows (no real Defa collector exists; see "Source-specific notes" and
+"Implementation sequence" for why that's a nontrivial gap — no public API,
+Step 9, not yet started — not just an unwritten stub). Removed on explicit
+instruction ("remove the EV tab since we can't collect the data at the
+moment") — showing a chart/KPI that can only ever reflect fake data was
+worse than not showing it at all, consistent with this app's broader
+"never fabricate or show data that isn't real" stance.
+
+- Removed from `+page.svelte`: the `ev`/"EV charging" entry in `tabs`, its
+  `tab-content` block, the "EV charging" `StatTile`, `evSessions` from
+  `YearData` (and the `loadEvSessions` call in `ensureYear`), and the
+  `evTotalKwh`/`evSessionCount`/`evMonthly`/`evMonthlySeries` derived
+  values that only fed those two removed UI pieces. `monthLabels`/
+  `MONTH_KEYS` went too — they existed solely for the EV monthly chart's
+  x-axis, nothing else in this file used month-name labels.
+- **Backend/API scaffolding deliberately left untouched**: `loadEvSessions`
+  and the `EvSession` type still exist in `api.ts` (just unused for now),
+  and the backend's `ev_charging_session`/`ev_measurement` schema, `GET
+  /api/ev/sessions` endpoint, `EVRepository`, and the fake-data
+  generator's EV output are all still there. This was a frontend-display
+  decision, not "EV support doesn't exist yet" — removing the backend
+  pieces too would be redoing real, spec-required (§7/§43 Step 9)
+  groundwork for no reason once a real Defa collector eventually gets
+  built.
+- `MonthlyBarChart.svelte` itself (the chart component, not EV-specific)
+  is left in place even though nothing imports it right now — it's a
+  generic monthly-bar chart, not EV code, and deleting a working generic
+  component because its one caller went away would be removing more than
+  what was actually asked.
+- Translation keys removed from **both** `en.json` and `fi.json` (kept in
+  lockstep, per "Frontend localization" below): `tabs.ev`, `kpi.evCharging`,
+  `kpi.evSessionsSub`, `charts.evMonthly`.
+- Verified live: only three tabs render (Electricity/Weather/Spot price),
+  the KPI row shows two tiles instead of three, and no console errors —
+  confirming no other component silently depended on the now-removed
+  `evSessions` field of `YearData`.
 
 ## Frontend localization
 

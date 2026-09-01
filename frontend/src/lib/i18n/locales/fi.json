@@ -15,15 +15,12 @@
 	},
 	"kpi": {
 		"annualConsumption": "Vuosikulutus",
-		"averageSpotPrice": "Keskimääräinen pörssihinta",
-		"evCharging": "Sähköauton lataus",
-		"evSessionsSub": "{count} latauskertaa vuonna {year}"
+		"averageSpotPrice": "Keskimääräinen pörssihinta"
 	},
 	"charts": {
 		"electricityConsumption": "Sähkönkulutus",
 		"consumptionVsTemperature": "Päivittäinen kulutus vs. lämpötila",
 		"dailySpotPrice": "Pörssihinta",
-		"evMonthly": "Sähköauton latausenergia kuukausittain",
 		"xTemperature": "Keskilämpötila (°C)",
 		"yConsumption": "Kulutus (kWh)",
 		"tableView": "Taulukkonäkymä",
@@ -57,8 +54,7 @@
 	"tabs": {
 		"electricity": "Sähkö",
 		"weather": "Sää",
-		"spotPrice": "Pörssihinta",
-		"ev": "Sähköauton lataus"
+		"spotPrice": "Pörssihinta"
 	},
 	"settings": {
 		"title": "Asetukset",

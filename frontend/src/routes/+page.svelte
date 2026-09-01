@@ -6,20 +6,17 @@
 		loadElectricity,
 		loadWeather,
 		loadSpotPrice,
-		loadEvSessions,
 		type DateRange,
 		type ElectricityRow,
 		type WeatherRow,
-		type SpotPriceRow,
-		type EvSession
+		type SpotPriceRow
 	} from '$lib/api';
-	import { MONTH_KEYS, dailySeries } from '$lib/aggregate';
+	import { dailySeries } from '$lib/aggregate';
 	import { formatCompact, formatNumber } from '$lib/format';
 	import { _ as translate, locale } from 'svelte-i18n';
 	import Tabs from '$lib/Tabs.svelte';
 	import ElectricityChart from '$lib/charts/ElectricityChart.svelte';
 	import SpotPriceChart from '$lib/charts/SpotPriceChart.svelte';
-	import MonthlyBarChart from '$lib/charts/MonthlyBarChart.svelte';
 	import ScatterChart from '$lib/charts/ScatterChart.svelte';
 	import StatTile from '$lib/charts/StatTile.svelte';
 
@@ -27,7 +24,6 @@
 		electricity: ElectricityRow[];
 		weather: WeatherRow[];
 		spotPrice: SpotPriceRow[];
-		evSessions: EvSession[];
 	};
 
 	const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)'];
@@ -45,8 +41,7 @@
 	const tabs = $derived([
 		{ id: 'electricity', label: $translate('tabs.electricity') },
 		{ id: 'weather', label: $translate('tabs.weather') },
-		{ id: 'spotPrice', label: $translate('tabs.spotPrice') },
-		{ id: 'ev', label: $translate('tabs.ev') }
+		{ id: 'spotPrice', label: $translate('tabs.spotPrice') }
 	]);
 
 	onMount(async () => {
@@ -74,13 +69,12 @@
 		loadingYears.add(y);
 		loadingYears = new Set(loadingYears);
 		try {
-			const [electricity, weather, spotPrice, evSessions] = await Promise.all([
+			const [electricity, weather, spotPrice] = await Promise.all([
 				loadElectricity(y),
 				loadWeather(y),
-				loadSpotPrice(y),
-				loadEvSessions(y)
+				loadSpotPrice(y)
 			]);
-			cache.set(y, { electricity, weather, spotPrice, evSessions });
+			cache.set(y, { electricity, weather, spotPrice });
 			cache = new Map(cache);
 		} finally {
 			loadingYears.delete(y);
@@ -100,15 +94,11 @@
 	);
 
 	const totalKwh = $derived(primary ? primary.electricity.reduce((s, r) => s + r.energy_kwh, 0) : 0);
-	const evTotalKwh = $derived(primary ? primary.evSessions.reduce((s, e) => s + e.energy_kwh, 0) : 0);
-	const evSessionCount = $derived(primary ? primary.evSessions.length : 0);
 	const avgSpotPrice = $derived(
 		primary && primary.spotPrice.length
 			? primary.spotPrice.reduce((s, r) => s + r.price_eur_mwh, 0) / primary.spotPrice.length
 			: 0
 	);
-
-	const monthLabels = $derived(MONTH_KEYS.map((k) => $translate(`months.${k}`)));
 
 	function toScatter(elRows: ElectricityRow[], wRows: WeatherRow[]) {
 		const dailyKwh = new Map(dailySeries(elRows, (r) => r.energy_kwh, 'sum').map((p) => [p.date, p.value]));
@@ -121,18 +111,6 @@
 		const out: { name: string; color: string; points: { x: number; y: number; date: string }[] }[] = [];
 		if (primary) out.push({ name: String(year), color: SERIES_COLORS[0], points: toScatter(primary.electricity, primary.weather) });
 		if (secondary) out.push({ name: String(compareYear), color: SERIES_COLORS[1], points: toScatter(secondary.electricity, secondary.weather) });
-		return out;
-	});
-
-	function evMonthly(sessions: EvSession[]) {
-		const out = new Array(12).fill(0);
-		for (const s of sessions) out[new Date(s.start_time).getUTCMonth()] += s.energy_kwh;
-		return out;
-	}
-	const evMonthlySeries = $derived.by(() => {
-		const out: { name: string; color: string; values: number[] }[] = [];
-		if (primary) out.push({ name: String(year), color: SERIES_COLORS[0], values: evMonthly(primary.evSessions) });
-		if (secondary) out.push({ name: String(compareYear), color: SERIES_COLORS[1], values: evMonthly(secondary.evSessions) });
 		return out;
 	});
 
@@ -200,11 +178,6 @@
 					value="{formatNumber(avgSpotPrice / 10, 2, $locale ?? 'en')} c/kWh"
 					sub={String(year)}
 				/>
-				<StatTile
-					label={$translate('kpi.evCharging')}
-					value="{formatCompact(evTotalKwh, $locale ?? 'en')} kWh"
-					sub={$translate('kpi.evSessionsSub', { values: { count: evSessionCount, year } })}
-				/>
 			</div>
 		{/if}
 
@@ -225,15 +198,6 @@
 					series={scatterSeries}
 					xLabel={$translate('charts.xTemperature')}
 					yLabel={$translate('charts.yConsumption')}
-				/>
-			</div>
-
-			<div class="tab-content" class:hidden={activeTab !== 'ev'}>
-				<MonthlyBarChart
-					title={$translate('charts.evMonthly')}
-					months={monthLabels}
-					series={evMonthlySeries}
-					unit="kWh"
 				/>
 			</div>
 		{/if}
