@@ -18,6 +18,7 @@ func NewRouter(pool *pgxpool.Pool, diskCheckPath string) http.Handler {
 	electricityRepo := storage.NewElectricityRepository(pool)
 	spotPriceRepo := storage.NewSpotPriceRepository(pool)
 	evRepo := storage.NewEVRepository(pool)
+	contractRepo := storage.NewContractRepository(pool)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(collectorRepo, diskCheckPath))
@@ -27,21 +28,27 @@ func NewRouter(pool *pgxpool.Pool, diskCheckPath string) http.Handler {
 	mux.HandleFunc("GET /api/electricity/measurements", electricityMeasurementsHandler(electricityRepo))
 	mux.HandleFunc("GET /api/spot-prices", spotPricesHandler(spotPriceRepo))
 	mux.HandleFunc("GET /api/ev/sessions", evSessionsHandler(evRepo))
+	mux.HandleFunc("/api/contracts", contractsHandler(contractRepo))
+	mux.HandleFunc("/api/contracts/{id}", contractHandler(contractRepo))
 
 	return withCORS(mux)
 }
 
-// withCORS allows any origin for GET requests. The frontend and backend
-// run as separate services on separate ports even in production (spec §9
+// withCORS allows any origin for GET/POST. The frontend and backend run as
+// separate services on separate ports even in production (spec §9
 // deployment split), so cross-origin requests are the normal case, not an
 // edge case — and this is a LAN-only app (spec §1), so a permissive origin
 // is an acceptable tradeoff for not having to keep an allowlist in sync
-// with whatever port/host the frontend happens to be served from.
+// with whatever port/host the frontend happens to be served from. POST/PUT
+// (contracts) need Access-Control-Allow-Headers too — a JSON body triggers
+// a preflight that the browser only lets through if Content-Type is
+// explicitly allowed.
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

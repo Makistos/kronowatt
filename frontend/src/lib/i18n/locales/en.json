@@ -4,7 +4,10 @@
 		"year": "Year",
 		"compareWith": "Compare with",
 		"none": "None",
-		"loading": "Loading…"
+		"loading": "Loading…",
+		"language": "Language",
+		"languageEnglish": "English",
+		"languageFinnish": "Finnish"
 	},
 	"emptyState": {
 		"heading": "No data available.",
@@ -56,6 +59,32 @@
 		"weather": "Weather",
 		"spotPrice": "Spot price",
 		"ev": "EV charging"
+	},
+	"settings": {
+		"title": "Settings",
+		"existingContracts": "Existing contracts",
+		"noContracts": "No contracts yet.",
+		"edit": "Edit",
+		"editingContract": "Editing contract",
+		"newContract": "New contract",
+		"addNew": "+ Add new",
+		"startDate": "Starts on",
+		"emptyMeansSpot": "Leave the fixed price's electricity cost empty to use spot pricing instead.",
+		"fixedPricing": "Fixed price",
+		"spotPricing": "Spot price",
+		"electricityCost": "Electricity cost (c/kWh)",
+		"spotElectricityCost": "Margin on spot price (c/kWh)",
+		"spotElectricityCostHint": "Added on top of the spot price, e.g. 0.49",
+		"transferCost": "Transfer cost (c/kWh)",
+		"transferCostShort": "transfer",
+		"monthlyFee": "Monthly fee (€)",
+		"electricityTax": "Electricity tax (€)",
+		"transferTax": "Transfer tax (€)",
+		"save": "Save",
+		"update": "Update",
+		"cancel": "Cancel",
+		"validationError": "Enter an electricity cost for either fixed or spot pricing.",
+		"saved": "Saved. This pricing takes effect from {date}."
 	},
 	"months": {
 		"jan": "Jan",

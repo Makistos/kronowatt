@@ -17,7 +17,10 @@ only public internet access. What's real:
   weather, spot price, and EV session data plus health — see "REST API"
   below. A `seed` subcommand loads the frontend's fake-data fixtures into
   the real database for end-to-end testing without real collectors for
-  everything — see "Seeding fake data into the real database".
+  everything — see "Seeding fake data into the real database". Contract
+  pricing (spec §6/§43 Step 6, settings-dialog scope — see "Contracts") is
+  also real now: `electricity_contract`/`contract_price_period` hold
+  actual user-entered rows via `GET|POST /api/contracts`, not just schema.
   `internal/collectors/{cozify,spotprice,ev}` and `internal/analysis` are
   still empty stubs (no real spot-price or EV collector exists — only
   weather does — so `spot_price`/`ev_charging_session` only ever have
@@ -30,8 +33,11 @@ only public internet access. What's real:
   (`src/lib/api.ts`), not static fake-data JSON (that file, `fakeData.ts`,
   is gone). Chart components live in `src/lib/charts/` — see "Frontend
   dashboard" below for the dataviz approach and what's not done (dark-mode
-  rendering unverified — see that section). Localized via `svelte-i18n`,
-  English only so far — see "Frontend localization".
+  rendering unverified — see that section). A "Settings" button/dialog
+  (`src/lib/SettingsDialog.svelte`, global in `+layout.svelte`) lets the
+  user enter contract pricing, which now genuinely drives the Spot price
+  tab's paid-price line and cost tiles — see "Contracts". Localized via
+  `svelte-i18n`, English and Finnish — see "Frontend localization".
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -168,10 +174,11 @@ structs storage returns).
   400; the frontend dashboard rendered from these endpoints end-to-end
   (screenshotted), and correctly showed its empty-state error (not stale
   cached data) when the backend was killed mid-session.
-- **Not yet done**: no contract endpoints (no `electricity_contract` table
-  data exists, seeded or real — the fake-data generator doesn't produce
-  contracts). No real spot-price or EV collectors, so those two tables only
-  ever have seeded fake rows today.
+- `GET /api/contracts` / `POST /api/contracts` — see "Contracts" below.
+  Real, user-entered rows now, not seeded fixtures — the fake-data
+  generator still doesn't (and shouldn't) produce contracts.
+- **Not yet done**: no real spot-price or EV collectors, so those two
+  tables only ever have seeded fake rows today.
 
 ## Seeding fake data into the real database
 
@@ -755,15 +762,39 @@ compare option simply isn't offered once it matches the primary selection.
 Uses `svelte-i18n` (store-based, no compiler step) rather than a
 compile-time solution like Paraglide — simpler to wire up correctly for a
 single-locale start, and doesn't add a build-time codegen step for one
-language. English (`src/lib/i18n/locales/en.json`) is the only registered
-locale; `src/lib/i18n/index.ts` hardcodes `initialLocale: 'en'` rather than
-detecting the browser's language, since there's nothing else to fall back
-to yet.
+language. English and Finnish (`src/lib/i18n/locales/{en,fi}.json`) are
+both registered in `src/lib/i18n/index.ts`; `initialLocale` still hardcodes
+`'en'` rather than detecting the browser's language
+(`getLocaleFromNavigator()`) — a saved user choice should always win over
+guessing from `Accept-Language`, and English (the only locale that's had
+eyes on every screen) is the safer default for a first-time visitor than
+whatever the browser reports.
+
+**Language switcher** (`src/lib/LanguageSwitcher.svelte`): two small flag
+buttons (🇬🇧/🇫🇮), rendered top-right in `+layout.svelte` so it's present on
+every route, not just the dashboard. Clicking a flag calls svelte-i18n's
+`locale.set(code)` and writes the choice to `localStorage`
+(`kronowatt:locale`); `+layout.svelte`'s `onMount` reads it back on load
+and re-applies it. The restore logic deliberately lives in `onMount`, not
+at `i18n/index.ts` module scope — that module also executes during
+adapter-static's prerender pass (a Node context with no `localStorage`),
+while `onMount` only ever runs in the browser. Re-applying a saved
+non-English locale briefly flips svelte-i18n's `$isLoading` back to `true`
+while `fi.json` loads (it wasn't needed for the `'en'` initial render);
+`+layout.svelte`'s existing `$isLoading` gate already handles this the
+same way it handles the very first load, so there's no separate flash to
+guard against. Verified live: switching to Finnish translates every UI
+string *and* the KPI/chart numbers (`Intl.NumberFormat('fi', ...)` renders
+`0,00` with a comma, not `0.00`) in the same click, and the choice survives
+a full page reload.
 
 - **Every UI string is a translation key** — dashboard chrome, chart
   titles/axis labels, table headers, the fake-data-missing empty state.
   Don't add a new hardcoded English string to a component; add a key to
-  `en.json` instead, even though only English exists right now.
+  `en.json` **and** its Finnish translation to `fi.json` — the two files
+  must stay in lockstep (same key set), since svelte-i18n falls back to
+  English silently for a missing key rather than erroring, which would
+  hide a forgotten translation instead of surfacing it.
 - **Month names are language-neutral keys, not labels**:
   `MONTH_KEYS` in `aggregate.ts` (`'jan'`…`'dec'`) index the 12 monthly
   buckets; a component resolves them to display text via
@@ -773,9 +804,9 @@ to yet.
 - **Numbers and dates are locale-aware, not just strings**: `formatNumber`,
   `formatCompact`, `formatDate` (`src/lib/format.ts`) all take a `locale`
   parameter, threaded from svelte-i18n's `locale` store (`$locale ?? 'en'`)
-  at every call site. This matters once a second locale exists (e.g.
-  Finnish formats decimals/thousands differently) even though it's
-  invisible with only English registered.
+  at every call site. This paid off directly once Finnish was registered —
+  no chart/format code needed to change, `Intl.NumberFormat('fi', ...)`
+  just renders `0,00`-style comma decimals automatically.
 - **Import alias is `_ as translate`, never `_ as t`.** Several charts loop
   `{#each yTicks as t (t)}` — aliasing the translation store to `t` would
   get shadowed by that loop variable and silently break inside it (caught
@@ -857,6 +888,164 @@ tested). Design decisions worth knowing before touching this:
 - EV field lists (`ev_charging_session`, `ev_measurement`) are explicitly
   provisional per spec §7.3/§37 — expect to revise columns once verified
   against `ha-defa-power`'s actual schema.
+
+## Contracts (spec §6/§43 Step 6 — settings dialog)
+
+Implements the pricing half of Step 6 on explicit user instruction — a
+settings dialog for entering contract pricing, not the full spec §6 field
+list (supplier/contract name/notes/multi-period-per-contract UI aren't
+exposed; the existing schema still has room for them later).
+
+- **Migration `00008_contract_transfer_tax.sql`** adds `transfer_tax
+  NUMERIC` to `contract_price_period`. The user's spec wants *two* separate
+  tax fields (electricity tax, transfer tax); `00006_contracts.sql`'s
+  original single `taxes` column becomes "electricity tax" (comment
+  updated, column not renamed — a live rename is more disruptive than
+  documenting the reinterpretation), and `other_fees`/`vat` are left alone
+  for genuinely miscellaneous future use rather than repurposed.
+- **Units are stored exactly as entered, not converted at the boundary**:
+  `energy_price`/`spot_margin`/`transfer_price` are c/kWh, `monthly_fee`/
+  `taxes`/`transfer_tax` are EUR — unlike `spot_price` (which preserves the
+  raw €/MWh market unit and converts only at display time), contracts have
+  no external wire format to defer to, since this is 100% manually entered
+  data. `internal/domain/contract.go` and the `contractDTO` in
+  `internal/api/contracts.go` document this explicitly; DTO field names
+  spell out the unit (`energy_price_c_per_kwh`, `monthly_fee_eur`, ...)
+  precisely so a future reader never has to guess.
+- **One contract row + one price period row per settings save**, not a
+  multi-period contract (the schema supports more periods per contract;
+  this feature just doesn't use that yet). `ContractRepository.Create`
+  (`internal/storage/contract.go`) inserts both in a transaction, with
+  `supplier`/`contract_name` (spec fields the settings UI doesn't collect)
+  defaulted to `''` rather than adding UI inputs the user didn't ask for.
+  "User can add a new contract and it will replace the old at start date"
+  is implemented as pure addition — spec §6's "historical contract data
+  immutable **unless explicitly edited**" default path — a later contract
+  with a later `valid_from` simply becomes what `List`'s effective-at
+  resolution returns for any timestamp on or after it; anything before
+  that timestamp keeps resolving to whatever covered it previously. No
+  `valid_to`/`period_end` bookkeeping needed as a result — "most recent
+  `valid_from` <= T" is enough.
+- **View and edit existing contracts** (`ContractRepository.Update`,
+  `PUT /api/contracts/{id}`) is the *explicit*-edit half of that same spec
+  §6 clause — unlike `Create`, this can change history: editing an old
+  contract changes what every timestamp it used to cover resolves to, on
+  purpose, per direct instruction ("user should be able to view and change
+  all existing contracts"). Updates both rows (`electricity_contract` and
+  `contract_price_period`) for that `contract_id` in one transaction,
+  including `period_start` when `valid_from` itself changes. Returns
+  `storage.ErrNotFound` (mapped to HTTP 404) for an unknown id — a small
+  shared sentinel added to `internal/storage/storage.go` since this is the
+  first repository method that needs one. `contracts.go`'s
+  `parseContract` helper does the shared decode/validate work for both
+  `POST` (create) and `PUT` (update) — same rules either way: a fixed
+  contract needs `energy_price_c_per_kwh`, a spot one needs
+  `spot_margin_c_per_kwh`. CORS (`withCORS`) had to add `PUT` alongside
+  `POST` to `Access-Control-Allow-Methods`.
+- **`SettingsDialog.svelte` shows every contract from `contractsStore`
+  above the form**, each row a one-line summary (start date + a
+  `contractSummary` rate string, e.g. "Spot price +0.49 c/kWh + 4.50 c/kWh
+  transfer") with its own "Edit" button. Clicking Edit calls `startEdit`,
+  which loads that contract's `id` into `editingId` and populates *only*
+  the section matching its actual `pricing_model` (mirroring how "add new"
+  only ever fills one section) — the heading switches to "Editing
+  contract" with a "+ Add new" link back to a blank form, and the save
+  button relabels to "Update" and calls `updateContract(editingId, ...)`
+  instead of `createContract(...)`. Same validation, same "fixed left
+  empty means spot" decision either way — editing can even flip a
+  contract's `pricing_model` by filling the other section instead, since
+  the save logic doesn't know or care whether it's creating or updating
+  when it decides which one applies. Verified live: editing an existing
+  spot contract's margin and re-saving updated that exact row (`id`
+  unchanged) rather than creating a new one, confirmed via `GET
+  /api/contracts` before/after.
+- **`GET /api/contracts` returns the full list** (small — a handful of
+  rows over years), not a single "current" lookup — the frontend resolves
+  "which contract applies at timestamp T" client-side
+  (`effectiveContractAt` in `frontend/src/lib/contractPricing.ts`), the
+  same pattern already used for matching electricity samples to spot price
+  rows. `POST /api/contracts` validates that a fixed contract has
+  `energy_price_c_per_kwh` and a spot contract has `spot_margin_c_per_kwh`
+  (400 otherwise) — the settings dialog decides which one client-side (see
+  below) but the API doesn't trust that decision blindly.
+- **CORS had to be widened for this feature**: `withCORS` in
+  `internal/api/api.go` previously only allowed `GET, OPTIONS` and never
+  needed `Access-Control-Allow-Headers` (no request had ever sent a body).
+  `POST /api/contracts` sends a JSON body, which triggers a real preflight
+  — now allows `POST` and echoes `Access-Control-Allow-Headers:
+  Content-Type`.
+- **`frontend/src/lib/SettingsDialog.svelte`**: a native `<dialog>`
+  (`showModal()`/`close()`, no extra library) opened from a "Settings"
+  button in `+layout.svelte` (global, next to the language switcher — the
+  contract data it edits affects the Spot price tab dashboard-wide, not
+  one page section). Presents **both** pricing sections side by side
+  (Fixed price / Spot price), each with the same five fields — electricity
+  cost, transfer cost, monthly fee, electricity tax, transfer tax — per
+  explicit instruction. "If fixed price contract is left empty user uses
+  spot pricing" is decided purely on submit: if the Fixed section's
+  electricity cost field is filled, the whole submission becomes a
+  `fixed` contract using only the Fixed section's five values; otherwise
+  it becomes `spot` using the Spot section's (whose "electricity cost" is
+  actually the margin added on top of the market price, labelled and
+  hinted as such in the UI). A single start-date field applies to
+  whichever section ends up used.
+- **Real bug caught by a Puppeteer smoke test, not `svelte-check`**:
+  `<input type="number">`'s `bind:value` binds an actual `number`, not a
+  string (Svelte special-cases numeric inputs) — the first version
+  declared every field as `$state('')` (inferred as `string`), which
+  type-checked fine (svelte-check didn't catch the mismatch) but threw
+  `s.trim is not a function` at runtime the moment a field was filled in
+  and submitted. Fixed by typing every numeric field `$state<number |
+  ''>('')` and writing `toNumber`/`toNumberOrNull` against that union
+  instead of assuming a string.
+- **`frontend/src/lib/contractsStore.svelte.ts`**: one shared, app-wide
+  `Contract[]` list (a `.svelte.ts` class using the same rune-in-class
+  pattern as `PeriodSelection`), loaded once in `+layout.svelte`'s
+  `onMount` and reloaded by `SettingsDialog` after a successful save — so
+  an already-open Spot price tab picks up a newly added contract without a
+  page reload, without every chart component fetching its own copy of what
+  is a tiny, rarely-changing list.
+- **`frontend/src/lib/contractPricing.ts`** is where "these contracts must
+  be considered in pricing info" actually lands, replacing
+  `SpotPriceChart.svelte`'s old hardcoded `PAID_PRICE_EUR_PER_MWH = 110`
+  entirely:
+  - `effectiveContractAt(contracts, at)` — latest contract with
+    `valid_from <= at`, mirroring the backend's own resolution logic.
+  - `paidRateCPerKWh(contract, spotPriceEurPerMwh)` — the per-kWh rate
+    actually paid at one timestamp: fixed energy price, or spot price +
+    margin, plus the flat transfer rate either way.
+  - `computePaidCostEur(contracts, elRows, spotRows)` — total paid cost
+    across a window: each electricity sample's energy × its own paid rate,
+    plus each *distinct calendar day* present's prorated share
+    (`monthly_fee + electricity_tax + transfer_tax) / daysInThatMonth`) of
+    the flat charges. Day-level proration, not sample-level — a monthly
+    fee is owed once per day regardless of how many 15-minute samples land
+    on it — and a contract change mid-window is handled for free since
+    each day independently resolves its own effective contract. Returns
+    `null` (not `0`) when the window has electricity data but no sample
+    matched any contract, so "no contract configured yet" renders as an em
+    dash in the cost tiles, never a fabricated "0 €" (which would read as
+    free electricity, not "unknown") — a `formatEurOrDash`/
+    `formatSignedEurOrDash` pair in `SpotPriceChart.svelte` handles the
+    display side.
+  - The dashed "paid" line on the price chart itself is now built straight
+    from the spot price rows' own timestamps (`paidPriceRows` in
+    `SpotPriceChart.svelte`), not by copying a flat value onto the already-
+    bucketed price series — since the paid rate depends only on the
+    timestamp (and, for a spot contract, that timestamp's own spot price),
+    never on consumption. Emits a synthetic `SpotPriceRow` (rate × 10, to
+    stay in the same "×10 back to c/kWh" unit space `toPoints` already
+    expects) so it flows through the exact same `priceBucket()`/
+    `toPoints()` pipeline as the real price series. A genuine improvement
+    over the old flat line, not just a data-source swap: a spot contract's
+    paid line now visibly tracks the market price (offset by margin +
+    transfer) instead of pretending to be flat, and a contract change
+    mid-window shows up as a real kink in the line. Verified live: a
+    2025 fixed-Jan–May/spot-Jun–Dec test contract produced a flat segment
+    that transitions into a parallel-offset curve exactly at the contract
+    boundary, and the cost tiles' numbers moved off the old flat-rate
+    baseline once real fee/tax data was included — confirming the
+    contract data is actually driving the numbers, not just decorative.
 
 ## Source-specific notes worth remembering
 

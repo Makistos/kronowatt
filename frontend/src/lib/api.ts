@@ -44,6 +44,18 @@ async function fetchJson<T>(path: string): Promise<T> {
 	return (await res.json()) as T;
 }
 
+async function sendJson<T>(method: 'POST' | 'PUT', path: string, body: unknown): Promise<T> {
+	const res = await fetch(`${API_BASE}${path}`, {
+		method,
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (!res.ok) {
+		throw new Error((await res.text()) || `${method} ${path} failed: ${res.status}`);
+	}
+	return (await res.json()) as T;
+}
+
 export async function loadYears(): Promise<number[]> {
 	const { years } = await fetchJson<{ years: number[] }>('/api/meta/years');
 	return years;
@@ -146,6 +158,49 @@ type evSessionDTO = {
 	maximum_power_kw?: number;
 	source: string;
 };
+
+// Every price field's unit is spelled out in its own name (c_per_kwh vs
+// eur) — unlike spot_price's raw €/MWh market unit, contracts have no
+// external wire format to defer to, so the API returns exactly what the
+// settings dialog collects and displays (see CLAUDE.md "Contracts").
+export type Contract = {
+	id: number;
+	pricing_model: 'fixed' | 'spot';
+	valid_from: string;
+	energy_price_c_per_kwh: number | null;
+	spot_margin_c_per_kwh: number | null;
+	transfer_price_c_per_kwh: number;
+	monthly_fee_eur: number;
+	electricity_tax_eur: number;
+	transfer_tax_eur: number;
+};
+
+export type NewContract = Omit<Contract, 'id'>;
+
+/** All contracts, oldest first — small enough to fetch in full and resolve
+ * "which contract applies at timestamp T" client-side (see
+ * contractPricing.ts), the same way electricity samples are matched to
+ * spot price rows. */
+export async function loadContracts(): Promise<Contract[]> {
+	return fetchJson<Contract[]>('/api/contracts');
+}
+
+/** Adds a new contract effective from `valid_from` — never edits an
+ * existing one (spec §6: historical contract data is immutable by
+ * default). It supersedes whatever was previously effective for any
+ * timestamp on or after `valid_from`. */
+export async function createContract(contract: NewContract): Promise<Contract> {
+	return sendJson<Contract>('POST', '/api/contracts', contract);
+}
+
+/** Overwrites an existing contract in place — the explicit-edit exception
+ * to spec §6's immutability rule, for "view and change an existing
+ * contract" rather than only ever adding a new one. Can change history:
+ * editing an old contract changes what applies for every timestamp it
+ * used to cover. */
+export async function updateContract(id: number, contract: NewContract): Promise<Contract> {
+	return sendJson<Contract>('PUT', `/api/contracts/${id}`, contract);
+}
 
 export async function loadEvSessions(year: number): Promise<EvSession[]> {
 	const rows = await fetchJson<evSessionDTO[]>(`/api/ev/sessions?year=${year}`);

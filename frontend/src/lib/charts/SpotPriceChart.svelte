@@ -9,6 +9,8 @@
 	} from '$lib/api';
 	import { PeriodSelection, fetchForWindow } from '$lib/periodSelection.svelte';
 	import { avgPriceByYear, avgPriceByMonth, avgPriceByWeek, avgPriceByDay, avgPriceByHour, actualPriceByQuarterHour } from '$lib/priceBuckets';
+	import { contractsStore } from '$lib/contractsStore.svelte';
+	import { effectiveContractAt, paidRateCPerKWh, computePaidCostEur } from '$lib/contractPricing';
 	import { MONTH_KEYS } from '$lib/aggregate';
 	import { formatNumber } from '$lib/format';
 	import { _ as translate, locale } from 'svelte-i18n';
@@ -21,12 +23,6 @@
 	}>();
 
 	const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)'];
-
-	// A flat-rate contract, not a spot-based one — there's no contract/
-	// tariff table data or cost-engine yet (spec §6/§7 aren't implemented),
-	// and a real fixed-price contract is just a constant. 11 c/kWh =
-	// 110 EUR/MWh. Hardcoded pending an actual contract-entry UI.
-	const PAID_PRICE_EUR_PER_MWH = 110;
 
 	// Own PeriodSelection instance, independent of the Electricity tab's —
 	// same controls and behavior, but each tab remembers its own resolution
@@ -75,20 +71,33 @@
 	// Cost comparison always covers the *entire* selected window (whatever
 	// resolution picked it) as one total, matching each electricity sample
 	// to its exact-timestamp spot price — both are true 15-min data (see
-	// CLAUDE.md "Spot price really is 15-minute now").
+	// CLAUDE.md "Spot price really is 15-minute now"). "Paid" cost now comes
+	// from whatever contract was actually effective across the window
+	// (contractsStore, see CLAUDE.md "Contracts") instead of a hardcoded
+	// flat rate.
 	function computeCostComparison(elRows: ElectricityRow[], spotRows: SpotPriceRow[]) {
 		const priceByTime = new Map<string, number>();
 		for (const p of spotRows) priceByTime.set(p.time, p.price_eur_mwh);
 
 		let spotCostEur = 0;
-		let paidCostEur = 0;
 		for (const r of elRows) {
 			const price = priceByTime.get(r.time);
 			if (price === undefined) continue;
 			spotCostEur += (r.energy_kwh * price) / 1000; // EUR/MWh -> EUR/kWh
-			paidCostEur += (r.energy_kwh * PAID_PRICE_EUR_PER_MWH) / 1000;
 		}
-		return { spotCostEur, paidCostEur, differenceEur: paidCostEur - spotCostEur };
+		const paidCostEur = computePaidCostEur(contractsStore.contracts, elRows, spotRows);
+		const differenceEur = paidCostEur === null ? null : paidCostEur - spotCostEur;
+		return { spotCostEur, paidCostEur, differenceEur };
+	}
+
+	// "No contract configured yet" must read as unknown, not "this is free"
+	// — an em dash rather than a fabricated 0 €.
+	function formatEurOrDash(v: number | null): string {
+		return v === null ? '—' : `${formatNumber(v, 0, $locale ?? 'en')} €`;
+	}
+	function formatSignedEurOrDash(v: number | null): string {
+		if (v === null) return '—';
+		return `${v >= 0 ? '+' : ''}${formatNumber(v, 0, $locale ?? 'en')} €`;
 	}
 
 	const primaryCost = $derived(computeCostComparison(primaryElectricity, primarySpotPrice));
@@ -131,6 +140,26 @@
 		return names;
 	});
 
+	// The paid-price line's rate depends only on the timestamp (which
+	// contract was effective, and — for a spot contract — that timestamp's
+	// own spot price), not on consumption, so it's built straight from the
+	// spot price rows' own timestamps rather than the electricity rows.
+	// Emits a synthetic SpotPriceRow (rate re-expressed as EUR/MWh, ×10) so
+	// it can flow through the same priceBucket()/toPoints() pipeline as the
+	// real price series, unit math included. Rows with no effective
+	// contract yet (or a spot contract with no matching spot price) are
+	// dropped, same "can't show what we don't have" as everywhere else.
+	function paidPriceRows(spotRows: SpotPriceRow[]): SpotPriceRow[] {
+		const out: SpotPriceRow[] = [];
+		for (const row of spotRows) {
+			const contract = effectiveContractAt(contractsStore.contracts, new Date(row.time));
+			const rate = paidRateCPerKWh(contract, row.price_eur_mwh);
+			if (rate === null) continue;
+			out.push({ time: row.time, price_eur_mwh: rate * 10 });
+		}
+		return out;
+	}
+
 	const priceSeries = $derived.by(() => {
 		const out: { name: string; color: string; points: { dayOfYear: number; value: number }[]; dashed?: boolean }[] =
 			[];
@@ -139,7 +168,7 @@
 		out.push({
 			name: $translate('charts.pricePaidFor', { values: { period: groups[0] ?? '' } }),
 			color: SERIES_COLORS[0],
-			points: primaryPoints.map((p) => ({ ...p, value: PAID_PRICE_EUR_PER_MWH / 10})),
+			points: toPoints(priceBucket(paidPriceRows(primarySpotPrice))),
 			dashed: true
 		});
 		if (ps.comparisonEnabled) {
@@ -148,7 +177,7 @@
 			out.push({
 				name: $translate('charts.pricePaidFor', { values: { period: groups[1] ?? '' } }),
 				color: SERIES_COLORS[1],
-				points: comparePoints.map((p) => ({ ...p, value: PAID_PRICE_EUR_PER_MWH / 10})),
+				points: toPoints(priceBucket(paidPriceRows(compareSpotPrice))),
 				dashed: true
 			});
 		}
@@ -266,12 +295,12 @@
 		/>
 		<StatTile
 			label={$translate('charts.costAtPaidPrice')}
-			value="{formatNumber(primaryCost.paidCostEur, 0, $locale ?? 'en')} €"
+			value={formatEurOrDash(primaryCost.paidCostEur)}
 			sub={groups[0] ?? ''}
 		/>
 		<StatTile
 			label={$translate('charts.costDifference')}
-			value="{primaryCost.differenceEur >= 0 ? '+' : ''}{formatNumber(primaryCost.differenceEur, 0, $locale ?? 'en')} €"
+			value={formatSignedEurOrDash(primaryCost.differenceEur)}
 			sub={groups[0] ?? ''}
 		/>
 		{#if compareCost}
@@ -282,12 +311,12 @@
 			/>
 			<StatTile
 				label={$translate('charts.costAtPaidPrice')}
-				value="{formatNumber(compareCost.paidCostEur, 0, $locale ?? 'en')} €"
+				value={formatEurOrDash(compareCost.paidCostEur)}
 				sub={groups[1] ?? ''}
 			/>
 			<StatTile
 				label={$translate('charts.costDifference')}
-				value="{compareCost.differenceEur >= 0 ? '+' : ''}{formatNumber(compareCost.differenceEur, 0, $locale ?? 'en')} €"
+				value={formatSignedEurOrDash(compareCost.differenceEur)}
 				sub={groups[1] ?? ''}
 			/>
 		{/if}
