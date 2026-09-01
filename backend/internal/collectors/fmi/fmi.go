@@ -1,7 +1,7 @@
-// Package weather collects observations from FMI's open data WFS API
+// Package fmi collects weather observations from FMI's open data WFS API
 // (spec §4). No auth required; it's a public documented API, unlike
 // Cozify (no device available yet) or Defa (unofficial/reverse-engineered).
-package weather
+package fmi
 
 import (
 	"context"

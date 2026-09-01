@@ -1,4 +1,4 @@
-package weather
+package fmi
 
 import (
 	"encoding/json"

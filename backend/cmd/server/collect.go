@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"kronowatt/backend/internal/collectors/weather"
+	"kronowatt/backend/internal/collectors/fmi"
 	"kronowatt/backend/internal/config"
 	"kronowatt/backend/internal/scheduler"
 	"kronowatt/backend/internal/storage"
@@ -33,21 +33,21 @@ func runCollect(args []string) {
 	}
 	defer pool.Close()
 
-	job := newWeatherJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool))
+	job := newFMIJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool))
 	if err := job(ctx); err != nil {
 		log.Fatalf("collect weather: %v", err)
 	}
 }
 
-// newWeatherJob wires the weather collector's fetch/parse logic (which
-// knows nothing about storage — spec §2.5) to the repository layer and
-// collector health tracking, as a scheduler.Job.
-func newWeatherJob(cfg config.Config, repo *storage.WeatherRepository, collectorRepo *storage.CollectorRepository) scheduler.Job {
+// newFMIJob wires the FMI collector's fetch/parse logic (which knows
+// nothing about storage — spec §2.5) to the repository layer and collector
+// health tracking, as a scheduler.Job.
+func newFMIJob(cfg config.Config, repo *storage.WeatherRepository, collectorRepo *storage.CollectorRepository) scheduler.Job {
 	const name = "fmi_observation"
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	return func(ctx context.Context) error {
-		obs, err := weather.FetchObservations(ctx, client, cfg.FMIStationFMISID, time.Time{})
+		obs, err := fmi.FetchObservations(ctx, client, cfg.FMIStationFMISID, time.Time{})
 		if err != nil {
 			_ = collectorRepo.RecordError(ctx, name, err)
 			return fmt.Errorf("fetch: %w", err)

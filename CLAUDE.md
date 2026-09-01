@@ -60,7 +60,10 @@ collector needs config too structured for flat env vars (Cozify's spec
 
 ## FMI weather collector
 
-`internal/collectors/weather` calls FMI's public open-data WFS API
+`internal/collectors/fmi` (package `fmi`, renamed from `weather` — it's
+specifically the FMI provider; the *domain* concept of weather stays
+provider-agnostic in `domain`/`storage`/`api`, per spec §2's provider
+isolation principle) calls FMI's public open-data WFS API
 (`https://opendata.fmi.fi/wfs`, `fmi::observations::weather::simple` stored
 query) — no auth, unlike Cozify (no device yet) or Defa (unofficial/
 reverse-engineered). Verified against a live response for FMISID 101786
@@ -302,6 +305,17 @@ kronowatt/
 Each collector directory under `internal/collectors/` should stay behind its
 provider interface and not be imported directly by `api/` or `analysis/` —
 those should depend on `domain`/`storage`, not on collector internals.
+
+**Deviation from the spec's literal naming**: the weather collector's
+directory/package is `fmi`, not `weather` as shown above — renamed on
+explicit instruction so the package name matches what it actually is (an
+FMI-specific client), not the generic data category. The generic "weather"
+concept still lives everywhere else exactly as planned (`domain`, `storage`,
+`api`, the `weather_observation` table, the `collect weather` CLI verb) —
+only the collector package itself changed, consistent with spec §2's
+provider isolation principle (`FMI -> WeatherProvider`): the interface/data
+model stays provider-agnostic, only the concrete implementation is named
+after its provider.
 
 ## Technology stack (§9)
 
