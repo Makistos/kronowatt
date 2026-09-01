@@ -2,20 +2,24 @@
 	import { onMount } from 'svelte';
 	import {
 		loadYears,
+		loadDateRange,
 		loadElectricity,
 		loadWeather,
 		loadSpotPrice,
 		loadEvSessions,
+		type DateRange,
 		type ElectricityRow,
 		type WeatherRow,
 		type SpotPriceRow,
 		type EvSession
 	} from '$lib/api';
-	import { MONTH_KEYS, monthlySums, dailySeries } from '$lib/aggregate';
+	import { MONTH_KEYS, dailySeries } from '$lib/aggregate';
 	import { formatCompact, formatNumber } from '$lib/format';
 	import { _ as translate, locale } from 'svelte-i18n';
+	import Tabs from '$lib/Tabs.svelte';
+	import ElectricityChart from '$lib/charts/ElectricityChart.svelte';
+	import SpotPriceChart from '$lib/charts/SpotPriceChart.svelte';
 	import MonthlyBarChart from '$lib/charts/MonthlyBarChart.svelte';
-	import DailyLineChart from '$lib/charts/DailyLineChart.svelte';
 	import ScatterChart from '$lib/charts/ScatterChart.svelte';
 	import StatTile from '$lib/charts/StatTile.svelte';
 
@@ -29,6 +33,7 @@
 	const SERIES_COLORS = ['var(--series-1)', 'var(--series-2)'];
 
 	let availableYears = $state<number[] | null>(null);
+	let dateRange = $state<DateRange>({ min: null, max: null });
 	let yearsError = $state<string | null>(null);
 	let year = $state<number | null>(null);
 	let compareYear = $state<number | null>(null);
@@ -36,12 +41,29 @@
 	let cache = $state<Map<number, YearData>>(new Map());
 	let loadingYears = $state<Set<number>>(new Set());
 
+	let activeTab = $state('electricity');
+	const tabs = $derived([
+		{ id: 'electricity', label: $translate('tabs.electricity') },
+		{ id: 'weather', label: $translate('tabs.weather') },
+		{ id: 'spotPrice', label: $translate('tabs.spotPrice') },
+		{ id: 'ev', label: $translate('tabs.ev') }
+	]);
+
 	onMount(async () => {
 		try {
-			const years = await loadYears();
-			availableYears = years;
-			year = years.at(-1) ?? null;
-			compareYear = years.length > 1 ? years.at(-2)! : null;
+			const [years, range] = await Promise.all([loadYears(), loadDateRange()]);
+			// Today's year is always selectable, even before any data exists
+			// for it yet — a fresh deployment on day 1 should default to the
+			// current (so-far-empty) year, not silently fall back to nothing.
+			const todayYear = new Date().getUTCFullYear();
+			availableYears = years.includes(todayYear) ? years : [...years, todayYear].sort((a, b) => a - b);
+			dateRange = range;
+			year = todayYear;
+			// Compare against the most recent *other* year that actually has
+			// data — usually last year, since this year is only selectable
+			// via the line above and may have none yet.
+			const otherDataYears = years.filter((y) => y !== todayYear);
+			compareYear = otherDataYears.length > 0 ? otherDataYears.at(-1)! : null;
 		} catch (e) {
 			yearsError = e instanceof Error ? e.message : String(e);
 		}
@@ -78,11 +100,6 @@
 	);
 
 	const totalKwh = $derived(primary ? primary.electricity.reduce((s, r) => s + r.energy_kwh, 0) : 0);
-	const avgTemp = $derived(
-		primary && primary.weather.length
-			? primary.weather.reduce((s, r) => s + r.temperature_c, 0) / primary.weather.length
-			: 0
-	);
 	const evTotalKwh = $derived(primary ? primary.evSessions.reduce((s, e) => s + e.energy_kwh, 0) : 0);
 	const evSessionCount = $derived(primary ? primary.evSessions.length : 0);
 	const avgSpotPrice = $derived(
@@ -91,48 +108,7 @@
 			: 0
 	);
 
-	const consumptionSeries = $derived.by(() => {
-		const out: { name: string; color: string; values: number[] }[] = [];
-		if (primary) out.push({ name: String(year), color: SERIES_COLORS[0], values: monthlySums(primary.electricity, (r) => r.energy_kwh) });
-		if (secondary) out.push({ name: String(compareYear), color: SERIES_COLORS[1], values: monthlySums(secondary.electricity, (r) => r.energy_kwh) });
-		return out;
-	});
-
-	function toDailyLine(rows: ElectricityRow[]) {
-		return dailySeries(rows, (r) => r.energy_kwh, 'sum');
-	}
-	const electricityDailySeries = $derived.by(() => {
-		const out: { name: string; color: string; points: { dayOfYear: number; value: number; date: string }[] }[] = [];
-		if (primary) out.push({ name: String(year), color: SERIES_COLORS[0], points: toDailyLine(primary.electricity) });
-		if (secondary) out.push({ name: String(compareYear), color: SERIES_COLORS[1], points: toDailyLine(secondary.electricity) });
-		return out;
-	});
-
-	function toDailyPrice(rows: SpotPriceRow[]) {
-		return dailySeries(rows, (r) => r.price_eur_mwh, 'avg');
-	}
-	const spotPriceDailySeries = $derived.by(() => {
-		const out: { name: string; color: string; points: { dayOfYear: number; value: number; date: string }[] }[] = [];
-		if (primary) out.push({ name: String(year), color: SERIES_COLORS[0], points: toDailyPrice(primary.spotPrice) });
-		if (secondary) out.push({ name: String(compareYear), color: SERIES_COLORS[1], points: toDailyPrice(secondary.spotPrice) });
-		return out;
-	});
-
 	const monthLabels = $derived(MONTH_KEYS.map((k) => $translate(`months.${k}`)));
-
-	const monthTicks = $derived.by(() => {
-		const line = electricityDailySeries[0]?.points ?? [];
-		const ticks: { pos: number; label: string }[] = [];
-		let lastMonth = -1;
-		for (const p of line) {
-			const m = new Date(p.date + 'T00:00:00Z').getUTCMonth();
-			if (m !== lastMonth) {
-				ticks.push({ pos: p.dayOfYear, label: monthLabels[m] });
-				lastMonth = m;
-			}
-		}
-		return ticks;
-	});
 
 	function toScatter(elRows: ElectricityRow[], wRows: WeatherRow[]) {
 		const dailyKwh = new Map(dailySeries(elRows, (r) => r.energy_kwh, 'sum').map((p) => [p.date, p.value]));
@@ -162,6 +138,10 @@
 
 	function onYearChange(e: Event) {
 		year = Number((e.target as HTMLSelectElement).value);
+		// Can't compare a year against itself — the compare year option list
+		// already excludes `year`, so if they now match, the underlying state
+		// is stale and must be cleared too (otherwise two series share a key).
+		if (compareYear === year) compareYear = null;
 	}
 	function onCompareChange(e: Event) {
 		const v = (e.target as HTMLSelectElement).value;
@@ -194,15 +174,17 @@
 					{/each}
 				</select>
 			</label>
-			<label>
-				{$translate('dashboard.compareWith')}
-				<select value={compareYear ?? ''} onchange={onCompareChange}>
-					<option value="">{$translate('dashboard.none')}</option>
-					{#each availableYears.filter((y) => y !== year) as y (y)}
-						<option value={y}>{y}</option>
-					{/each}
-				</select>
-			</label>
+			{#if availableYears.length > 1}
+				<label>
+					{$translate('dashboard.compareWith')}
+					<select value={compareYear ?? ''} onchange={onCompareChange}>
+						<option value="">{$translate('dashboard.none')}</option>
+						{#each availableYears.filter((y) => y !== year) as y (y)}
+							<option value={y}>{y}</option>
+						{/each}
+					</select>
+				</label>
+			{/if}
 			{#if isLoading}<span class="muted">{$translate('dashboard.loading')}</span>{/if}
 		</div>
 
@@ -214,13 +196,8 @@
 					sub={String(year)}
 				/>
 				<StatTile
-					label={$translate('kpi.averageTemperature')}
-					value="{formatNumber(avgTemp, 1, $locale ?? 'en')}°C"
-					sub={String(year)}
-				/>
-				<StatTile
 					label={$translate('kpi.averageSpotPrice')}
-					value="{formatNumber(avgSpotPrice, 1, $locale ?? 'en')} €/MWh"
+					value="{formatNumber(avgSpotPrice / 10, 2, $locale ?? 'en')} c/kWh"
 					sub={String(year)}
 				/>
 				<StatTile
@@ -229,36 +206,29 @@
 					sub={$translate('kpi.evSessionsSub', { values: { count: evSessionCount, year } })}
 				/>
 			</div>
+		{/if}
 
-			<div class="charts">
-				<MonthlyBarChart
-					title={$translate('charts.monthlyConsumption')}
-					months={monthLabels}
-					series={consumptionSeries}
-					unit="kWh"
-				/>
+		<Tabs {tabs} bind:active={activeTab} />
 
+		<div class="tab-content" class:hidden={activeTab !== 'electricity'}>
+			<ElectricityChart {availableYears} {dateRange} />
+		</div>
+
+		<div class="tab-content" class:hidden={activeTab !== 'spotPrice'}>
+			<SpotPriceChart {availableYears} {dateRange} />
+		</div>
+
+		{#if primary}
+			<div class="tab-content" class:hidden={activeTab !== 'weather'}>
 				<ScatterChart
 					title={$translate('charts.consumptionVsTemperature')}
 					series={scatterSeries}
 					xLabel={$translate('charts.xTemperature')}
 					yLabel={$translate('charts.yConsumption')}
 				/>
+			</div>
 
-				<DailyLineChart
-					title={$translate('charts.dailyConsumption')}
-					series={electricityDailySeries}
-					unit="kWh"
-					xTicks={monthTicks}
-				/>
-
-				<DailyLineChart
-					title={$translate('charts.dailySpotPrice')}
-					series={spotPriceDailySeries}
-					unit="€/MWh"
-					xTicks={monthTicks}
-				/>
-
+			<div class="tab-content" class:hidden={activeTab !== 'ev'}>
 				<MonthlyBarChart
 					title={$translate('charts.evMonthly')}
 					months={monthLabels}
@@ -310,10 +280,8 @@
 		gap: 12px;
 		margin-bottom: 24px;
 	}
-	.charts {
-		display: flex;
-		flex-direction: column;
-		gap: 20px;
+	.tab-content.hidden {
+		display: none;
 	}
 	.empty-state {
 		background: var(--surface-1);

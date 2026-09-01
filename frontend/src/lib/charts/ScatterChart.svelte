@@ -19,11 +19,14 @@
 	const plotW = W - margin.left - margin.right;
 	const plotH = H - margin.top - margin.bottom;
 
+	// With no points (e.g. a freshly-selected year with no data yet),
+	// Math.min/max of an empty array is +-Infinity, which cascades into NaN
+	// domains and NaN tick keys — fall back to an arbitrary [0, 1] domain.
 	const allPoints = $derived(series.flatMap((s: Series) => s.points));
-	const xMin = $derived(Math.min(...allPoints.map((p: Point) => p.x)));
-	const xMax = $derived(Math.max(...allPoints.map((p: Point) => p.x)));
-	const yMin = $derived(Math.min(0, ...allPoints.map((p: Point) => p.y)));
-	const yMax = $derived(Math.max(...allPoints.map((p: Point) => p.y)));
+	const xMin = $derived(allPoints.length ? Math.min(...allPoints.map((p: Point) => p.x)) : 0);
+	const xMax = $derived(allPoints.length ? Math.max(...allPoints.map((p: Point) => p.x)) : 1);
+	const yMin = $derived(allPoints.length ? Math.min(0, ...allPoints.map((p: Point) => p.y)) : 0);
+	const yMax = $derived(allPoints.length ? Math.max(...allPoints.map((p: Point) => p.y)) : 1);
 
 	function pad(min: number, max: number) {
 		const span = max - min || 1;

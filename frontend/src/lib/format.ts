@@ -12,3 +12,9 @@ export const formatDate = (isoDate: string, locale = 'en'): string =>
 	new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'short', day: 'numeric' }).format(
 		new Date(`${isoDate}T00:00:00Z`)
 	);
+
+/** yearMonth is "YYYY-MM" (the shape <input type="month"> produces). */
+export const formatMonth = (yearMonth: string, locale = 'en'): string =>
+	new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'short' }).format(
+		new Date(`${yearMonth}-01T00:00:00Z`)
+	);

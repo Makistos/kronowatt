@@ -5,7 +5,7 @@
 	import Tooltip from './Tooltip.svelte';
 
 	type Point = { dayOfYear: number; value: number; date?: string };
-	type Series = { name: string; color: string; points: Point[] };
+	type Series = { name: string; color: string; points: Point[]; dashed?: boolean };
 
 	let { title, series, unit, xTicks = [] } = $props<{
 		title: string;
@@ -23,16 +23,25 @@
 	const maxDay = $derived(
 		Math.max(1, ...series.flatMap((s: Series) => s.points.map((p: Point) => p.dayOfYear)))
 	);
-	const maxVal = $derived(
-		niceMax(Math.max(1, ...series.flatMap((s: Series) => s.points.map((p: Point) => p.value))))
-	);
-	const yTicks = $derived([0, 0.25, 0.5, 0.75, 1].map((f) => f * maxVal));
+
+	// Domain always includes 0 but isn't pinned to it as the baseline —
+	// values can go negative (temperature, and spot price itself, even
+	// though daily *averages* rarely do), unlike a plain bar chart's
+	// grows-from-zero bars.
+	const allValues = $derived(series.flatMap((s: Series) => s.points.map((p: Point) => p.value)));
+	const yMax = $derived(niceMax(Math.max(0, ...allValues, 0)));
+	const yMin = $derived.by(() => {
+		const min = Math.min(0, ...allValues, 0);
+		return min < 0 ? -niceMax(-min) : 0;
+	});
+	const yTicks = $derived([0, 0.25, 0.5, 0.75, 1].map((f) => yMin + f * (yMax - yMin)));
+	const yAxisDigits = $derived(yMax - yMin < 2 ? 2 : yMax - yMin < 20 ? 1 : 0);
 
 	function x(d: number) {
 		return margin.left + (d / maxDay) * plotW;
 	}
 	function y(v: number) {
-		return margin.top + plotH - (v / maxVal) * plotH;
+		return margin.top + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
 	}
 
 	function pathFor(points: Point[]) {
@@ -51,6 +60,12 @@
 		}
 		return best;
 	}
+
+	// Thin x-axis labels so they don't collide when many ticks are passed
+	// (e.g. one per day-of-month, or per hour) — every tick still marks a
+	// gridline-free position, just not every one gets a text label.
+	const tickStride = $derived(Math.max(1, Math.ceil(xTicks.length / 14)));
+	const visibleTicks = $derived(xTicks.filter((_: unknown, i: number) => i % tickStride === 0));
 
 	let hoverDay = $state<number | null>(null);
 	let pointerPos = $state({ x: 0, y: 0 });
@@ -74,7 +89,10 @@
 	{#if series.length > 1}
 		<div class="legend">
 			{#each series as s (s.name)}
-				<span class="legend-item"><span class="key" style="background:{s.color}"></span>{s.name}</span>
+				<span class="legend-item"
+					><span class="key" class:dashed={s.dashed} style="background:{s.dashed ? 'none' : s.color}; border-color:{s.color}"
+					></span>{s.name}</span
+				>
 			{/each}
 		</div>
 	{/if}
@@ -91,23 +109,31 @@
 					stroke-width="1"
 				/>
 				<text x={margin.left - 8} y={y(t)} text-anchor="end" dominant-baseline="middle" class="axis-label"
-					>{formatNumber(t, 0, $locale ?? 'en')}</text
+					>{formatNumber(t, yAxisDigits, $locale ?? 'en')}</text
 				>
 			{/each}
 			<line
 				x1={margin.left}
 				x2={W - margin.right}
-				y1={margin.top + plotH}
-				y2={margin.top + plotH}
+				y1={y(0)}
+				y2={y(0)}
 				stroke="var(--baseline)"
 				stroke-width="1"
 			/>
-			{#each xTicks as t (t.label + t.pos)}
+			{#each visibleTicks as t (t.label + t.pos)}
 				<text x={x(t.pos)} y={H - 8} text-anchor="middle" class="axis-label">{t.label}</text>
 			{/each}
 
 			{#each series as s (s.name)}
-				<path d={pathFor(s.points)} fill="none" stroke={s.color} stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+				<path
+					d={pathFor(s.points)}
+					fill="none"
+					stroke={s.color}
+					stroke-width="2"
+					stroke-linejoin="round"
+					stroke-linecap="round"
+					stroke-dasharray={s.dashed ? '5,4' : undefined}
+				/>
 			{/each}
 
 			{#if hoverDay !== null}
@@ -151,7 +177,8 @@
 					{#each series as s (s.name)}
 						{@const p = nearest(s.points, hoverDay)}
 						{#if p}
-							<div><span class="key" style="background:{s.color}"></span>{s.name}: <strong
+							<div><span class="key" class:dashed={s.dashed} style="background:{s.dashed ? 'none' : s.color}; border-color:{s.color}"
+									></span>{s.name}: <strong
 									>{formatNumber(p.value, 1, $locale ?? 'en')} {unit}</strong
 								></div
 							>
@@ -181,6 +208,7 @@
 	}
 	.legend {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 16px;
 		margin-bottom: 8px;
 		font-size: 12px;
@@ -195,6 +223,10 @@
 		width: 10px;
 		height: 2px;
 		display: inline-block;
+	}
+	.key.dashed {
+		height: 0;
+		border-top: 2px dashed;
 	}
 	.svg-wrap {
 		position: relative;

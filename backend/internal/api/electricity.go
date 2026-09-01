@@ -13,14 +13,14 @@ type electricityMeasurementDTO struct {
 	Source string   `json:"source"`
 	IC     *float64 `json:"ic,omitempty"`
 	EC     *float64 `json:"ec,omitempty"`
-	// PowerKW/EnergyKWh are derived from p[0], not stored directly. Energy
-	// is only meaningful as-is for hourly-bucketed rows (the seeded fake
-	// data): real Cozify samples land every ~10s, so deriving energy for
-	// those will need proper time-integration, not this shortcut — revisit
-	// once real device data exists (spec §3.2 field units are still
-	// unconfirmed too).
-	PowerKW   *float64 `json:"power_kw,omitempty"`
-	EnergyKWh *float64 `json:"energy_kwh,omitempty"`
+	// PowerKW/PhasesKW are p[0]/p[1:], not stored as separate columns.
+	// Deliberately no "energy_kwh" field here: converting power to energy
+	// needs the sample interval, which this API doesn't track (real Cozify
+	// samples land every ~10s; the seeded fake data is 15-min) — that
+	// conversion belongs wherever the caller knows what resolution it
+	// asked for, not baked into this DTO as a hardcoded assumption.
+	PowerKW  *float64  `json:"power_kw,omitempty"`
+	PhasesKW []float64 `json:"phases_kw,omitempty"`
 }
 
 func electricityMeasurementsHandler(repo *storage.ElectricityRepository) http.HandlerFunc {
@@ -54,7 +54,9 @@ func toElectricityMeasurementDTO(m domain.ElectricityMeasurement) electricityMea
 	}
 	if len(m.P) > 0 {
 		dto.PowerKW = &m.P[0]
-		dto.EnergyKWh = &m.P[0]
+	}
+	if len(m.P) > 1 {
+		dto.PhasesKW = m.P[1:]
 	}
 	return dto
 }

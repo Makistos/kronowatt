@@ -19,7 +19,7 @@
 	const plotW = W - margin.left - margin.right;
 	const plotH = H - margin.top - margin.bottom;
 
-	const maxVal = $derived(niceMax(Math.max(1, ...series.flatMap((s: Series) => s.values))));
+	const maxVal = $derived(niceMax(Math.max(0, ...series.flatMap((s: Series) => s.values))));
 	const yTicks = $derived([0, 0.25, 0.5, 0.75, 1].map((f) => f * maxVal));
 
 	const bandWidth = $derived(plotW / months.length);

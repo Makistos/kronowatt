@@ -139,12 +139,20 @@ structs storage returns).
 - `GET /api/meta/years` — distinct years present in
   `electricity_measurement` (the "spine" dataset), so the frontend can
   discover what's available instead of hardcoding a year list.
-- The electricity DTO derives `power_kw`/`energy_kwh` from `p[0]`, since
-  the table stores raw Cozify-shaped fields (`ic`, `p[]`, …), not a
-  pre-computed energy value. That derivation is only correct for
-  hourly-bucketed rows (the seeded fake data) — real ~10s Cozify samples
-  will need actual time-integration for energy, not this shortcut. See the
-  comment on `electricityMeasurementDTO` before touching it.
+- `GET /api/meta/range` — earliest/latest `electricity_measurement`
+  timestamps (`{"min":..., "max":...}`, both `null` if the table is empty).
+  Exists so the frontend can default pickers to the *actual* latest data
+  instead of assuming a full calendar year — early production has a
+  partial first year (data starting mid-year, nothing yet for months that
+  haven't happened), not a complete Jan-Dec span. See "Electricity tab"
+  below for where this actually gets used.
+- The electricity DTO exposes `power_kw`/`phases_kw` (from `p[0]`/`p[1:]`)
+  but deliberately **not** an energy value — converting power to energy
+  needs the sample interval, which this API doesn't track (real Cozify
+  samples land every ~10s; seeded fake data is 15-min), so that conversion
+  belongs wherever the caller knows what resolution it asked for. See the
+  comment on `electricityMeasurementDTO`, and `RAW_SAMPLE_INTERVAL_HOURS`
+  in the frontend's `api.ts` where the conversion actually happens.
 - CORS is wide open (`Access-Control-Allow-Origin: *`) for all GET/OPTIONS
   requests. Deliberate, not an oversight: frontend and backend are separate
   services on separate ports even in production (spec §9's deployment
@@ -187,15 +195,35 @@ real collected data:
   the real FMI collector at the same time produced no collisions (real
   data goes to `101786`, fake to `"fake"`).
 - Electricity's `ic` (cumulative imported energy) is synthesized as a
-  running sum of the fake data's hourly `energy_kwh` — verified live that
-  the cumulative total at year-end matches the generator's own reported
-  annual kWh.
+  running sum of the fake data's `energy_kwh` — verified live that the
+  cumulative total at year-end matches the generator's own reported annual
+  kWh. `p` is stored as `[total, phase1, phase2, phase3]` (from the
+  generator's `power_kw` + `phases_kw`), matching the real Cozify wire
+  format's total-then-phases ordering (spec §3.2).
 
 The command does per-row `INSERT ... ON CONFLICT DO NOTHING` (same
 idempotency pattern as the collectors), so re-running it is safe but slow
-(~20s for two years — a few tens of thousands of individual round trips,
-not batched). Fine for occasional dev seeding; would need a bulk-insert
-path (e.g. `COPY`) if this ever needs to run often or on much more data.
+(~20-40s for two years at 15-min electricity resolution — tens of
+thousands of individual round trips, not batched). Fine for occasional dev
+seeding; would need a bulk-insert path (e.g. `COPY`) if this ever needs to
+run often or on much more data.
+
+**Regenerating the fixtures shifts every dataset's specific values, even
+unrelated ones** — the generator draws from one seeded PRNG sequentially
+across electricity → weather → spot price → EV, so changing how much
+randomness electricity consumes (e.g. going from hourly to 15-minute) shifts
+what spot price and EV get, byte-for-byte, even though their own generation
+code didn't change. This is harmless on its own (still deterministic, just
+different specific values), but it means **re-running `seed` after
+regenerating fixtures without clearing old rows first creates duplicates**,
+not replacements: old rows keyed by their old timestamps survive
+`ON CONFLICT DO NOTHING` (weather/spot price share timestamps so old values
+just linger unchanged; EV sessions get entirely new `start_time`s and
+straight-up double). Hit this once — EV session count silently doubled.
+Always `DELETE FROM <table> WHERE source = 'fake_seed'` (and
+`WHERE station_fmisid = 'fake'` for weather) for all four tables before
+re-seeding after any generator change, not just for the table you think
+changed.
 
 ## What this system is
 
@@ -332,10 +360,16 @@ than editing the JSON by hand, then re-run `seed` to load the changes into
 the database.
 
 Modeling choices worth knowing if this needs adjusting:
-- Hourly resolution, not the real 10s Cozify sampling rate — a full year at
-  10s would be ~3M rows, unworkable for a browser fetch. If per-source
-  raw-resolution testing is ever needed, that's a different, much smaller
-  fixture, not a resolution bump here.
+- Electricity is 15-minute resolution (~35k rows/year); weather, spot
+  price, and EV sessions stay hourly/event-based. Not the real 10s Cozify
+  sampling rate either way — a full year at 10s would be ~3M electricity
+  rows. Electricity specifically needed finer-than-hourly resolution so the
+  dashboard's hour/15-min chart views (see "Electricity tab" below) have
+  real per-period data to drill into rather than an average; the other
+  three datasets never got an hour/15-min view, so they didn't need it.
+- Electricity also carries a synthetic 3-phase split (`phases_kw`,
+  `splitPhases` in the script) — see "Electricity tab" below for why and
+  how.
 - Household consumption uses a fixed month-weight curve
   (`MONTH_WEIGHT` in the script) forced to put exactly 50% of annual kWh in
   Jan-Mar, then a shared per-day random draw nudges both that day's
@@ -405,6 +439,302 @@ end-to-end rather than improvising:
   color-only), per the skill's "text never wears the data color" rule —
   legend swatches and tooltip series-keys are small colored rects/lines
   beside plain-ink text, not colored text.
+
+## Electricity tab — resolution, phases, comparison, temperature
+
+The dashboard's Electricity tab (`src/lib/charts/ElectricityChart.svelte` +
+`ElectricityBarChart.svelte`) is the one chart with its own independent
+controls — resolution, phase breakdown, comparison, date picker(s) — rather
+than using the page-level Year/Compare filters that the other three tabs
+(Weather, Spot price, EV) still share. It replaced the old separate
+"Monthly electricity consumption" and "Daily electricity consumption"
+charts entirely.
+
+**Drill-down windowing** (`WINDOW_OF` in `electricityBuckets.ts`) — each
+resolution operates within a fixed window, and the picker shown adapts
+accordingly:
+```
+year            -> no window, shows every available year, no date picker
+month, week     -> one year        -> year <select>
+day             -> one month       -> <input type="month">
+hour, quarter   -> one day         -> <input type="date">
+```
+This exists because fetching a full year at 15-minute resolution to show
+one bar chart would be 35,040 bars — the window keeps each view's bar count
+sane (max ~96, at 15-min-of-day) while still showing *real* per-period
+values rather than an averaged profile.
+
+**Positional bucketing, not date-keyed** (`electricityBuckets.ts`): buckets
+are indexed by *position within the period* (month 0–11, day-of-month,
+hour-of-day, etc.), not by absolute calendar date. This is what makes
+comparison work at all — comparing March 2025 to March 2024 means aligning
+"day 5" to "day 5", and the two periods essentially never share actual
+dates. `bucketByWeek`/`bucketByDay` take an explicit bucket count from the
+caller (e.g. `Math.max` of both compared periods' week/day counts) so a
+53-week year or a 31-day month being compared against a shorter one doesn't
+lose data.
+
+**Phase data is synthetic**: the real Cozify device hasn't been confirmed
+to report per-phase power at all (spec §3.2's field list is provisional).
+`generate-fake-data.mjs` synthesizes a 3-phase split (`splitPhases`, base
+weights 0.36/0.33/0.31 plus per-quarter-hour noise, renormalized so phases
+always sum exactly to the total) purely so this feature has something to
+render. The fake data generator also moved from hourly to **15-minute**
+resolution for electricity specifically (weather stayed hourly) — the
+hour/15-min chart views need real per-period data to drill into, not an
+average.
+
+**Color encodes the comparison period; opacity encodes phase** — not two
+separate categorical hues. `ElectricityBarChart`'s `STACK_OPACITY = [1,
+0.6, 0.35]` steps down the *group's own color* per phase, rather than
+giving phases their own categorical slots. This was a deliberate choice
+over spending 3 more categorical slots on phases: color stays reserved for
+the dimension that's actually being compared (which period), and opacity
+is a legitimate secondary encoding for a sub-breakdown within that. When
+both comparison and phases are on at once, this becomes a grouped+stacked
+bar chart — legend shows both the period-color swatches and the
+phase-opacity swatches.
+
+**A real latent bug found and fixed while building this**: `MonthlyBarChart`,
+`DailyLineChart`, and the initial `ElectricityBarChart` all computed their
+y-axis max as `niceMax(Math.max(1, ...values))`. `niceMax` already returns
+1 for an empty/zero-only series — wrapping it in `Math.max(1, ...)` doesn't
+just handle that case, it also floors any *real* positive max below 1 up to
+1, silently compressing the scale. Invisible while every chart dealt in
+hundreds of kWh; immediately visible once 15-minute buckets (~0.1–1 kWh)
+existed — the y-axis showed "1, 1, 1, 0" because every tick rounded to the
+same integer. Fixed by using `Math.max(0, ...)` in all three, plus adaptive
+axis decimal places (`yAxisDigits` in `ElectricityBarChart`) so small-scale
+data doesn't hit the same rounding collision again.
+
+Verified interactively (not just screenshotted at defaults) using a
+throwaway Puppeteer script driving the real dev server: every resolution,
+phase toggle, comparison toggle, both together, and the table-view toggle
+all confirmed rendering correctly against the real seeded backend.
+
+**Temperature overlay** ("Show temperature" checkbox): a small-multiples
+line chart (`DailyLineChart`, reused) rendered directly below the bar
+chart, sharing the same x-axis category positions — not a second y-axis on
+the same chart. Deliberate: the dataviz skill flags dual-axis (two y-scales
+on one chart) as the single most common charting mistake, and this is
+exactly the "two measures of different scale" case it says should be two
+charts sharing an axis instead. `weatherBuckets.ts` mirrors
+`electricityBuckets.ts`'s positional bucketing but **averages** for
+year/month/week/day and shows the **actual** reading for hour/quarter — per
+explicit instruction ("15m and 1h charts show actual temperature, for
+others show average"). Because weather data is hourly (not 15-minute — see
+"Fake data generation" above), "actual" at 15-min resolution means the real
+hourly reading is *stepped* across its 4 quarter-hour buckets rather than
+faked at finer granularity; the rendered line visibly shows this as flat
+4-point segments, which is honest given there's no finer real data, not a
+bug. Verified live across all six resolutions, including with comparison
+on (two temperature lines, same color-per-period convention as the bar
+chart).
+
+**Fixing `DailyLineChart` to build this surfaced a second real bug**: its
+y-scale assumed a `[0, max]` domain (bars-grow-from-zero thinking leaking
+into a line chart). Temperature is routinely negative in Finnish winter, so
+values below zero would have plotted off-canvas below the chart. Fixed by
+computing a proper `[yMin, yMax]` domain that only extends below zero when
+the data actually does, with the zero baseline drawn wherever `y(0)` falls
+rather than assumed to be the bottom edge. This same component is also used
+for spot price, which can go negative too (the fake-data generator
+produces negative summer-night prices) — the bug was latent there as well,
+just never visibly triggered because daily *averages* happened to stay
+positive.
+
+**KPI row**: the "Average temperature" tile was removed (now redundant
+with the Electricity tab's own temperature overlay) — `avgTemp` in
+`+page.svelte` was deleted along with it, not left as dead code.
+
+**Spot price really is 15-minute now, not hourly** — `generateSpotPriceYear`
+in the fake-data generator originally simplified spot price to hourly
+resolution (documented at the time as an acceptable deviation, since
+nothing depended on finer granularity yet). Once cost comparison needed to
+match each electricity sample to *its own* spot price rather than an
+hourly approximation, that deviation became a real accuracy problem — spec
+§5 itself specifies 15-minute intervals, and Nordic spot markets actually
+settle at 15-minute resolution in reality too, so this wasn't a stretch,
+just finishing what was already simplified. Electricity and spot price are
+now on an *identical* 15-min grid, so cost matching is an exact-timestamp
+`Map` lookup, not a truncate-to-hour approximation. `seed.go`'s
+`IntervalEnd` changed from `+1 hour` to `+15 minutes` to match. This
+roughly doubles seed time (~40-60s for two years now, still per-row
+`INSERT`) and needed a **full clean re-seed** of all four tables (not just
+spot price) — see "Regenerating the fixtures shifts every dataset's
+specific values" above; that gotcha applies to this change too, and was
+re-confirmed hitting it again before remembering to clear old rows first.
+
+## Spot price tab shares the Electricity tab's controls (`periodSelection.svelte.ts`)
+
+The Spot price tab (`SpotPriceChart.svelte`) originally had its own simple
+"whole year, optionally compare another whole year" view. Per explicit
+instruction ("show same date range selection choices as electricity
+consumption and calculate difference based on that with comparison
+possible"), it now offers the *exact same* resolution/date-picker/
+comparison system as the Electricity tab — not a lookalike, the same
+underlying state machine.
+
+**Extraction, not duplication**: the resolution/date-picker/comparison
+logic that was originally inline in `ElectricityChart.svelte` (windowing,
+positional-bucket counts, production-readiness defaults, the
+`canCompare`/single-year gating) moved into a `PeriodSelection` class in
+`periodSelection.svelte.ts` — a plain `.svelte.ts` module using Svelte 5's
+class-field `$state`/getter pattern (runes work in class fields outside
+`.svelte` files too, as long as the file has the `.svelte.ts` extension).
+`ElectricityChart` and `SpotPriceChart` each construct their **own**
+`PeriodSelection` instance (independent resolution/dates per tab — picking
+"hour" on one tab doesn't affect the other) but run identical logic, so a
+windowing bug fixed once is fixed for both, and there's no risk of the two
+tabs' behavior silently diverging over time. `fetchForWindow` (same file)
+resolves a `PeriodWindow` (`'all-years'` or a `{start,end}` range) into
+actual rows, so every consumer's fetch function is a one-liner rather than
+re-implementing the all-years-vs-range branch.
+`ElectricityChart`/`SpotPriceChart` still each own what's specific to them:
+phase breakdown and temperature overlay stayed in `ElectricityChart`; cost
+comparison stayed in `SpotPriceChart`. Only the shared control/windowing
+state moved.
+
+`priceBuckets.ts` mirrors `weatherBuckets.ts`'s avg-vs-actual split for
+bucketing the price line, but simpler: spot price is already true 15-min
+data (see above), so unlike temperature's hour-stepped-to-quarter handling,
+every resolution down to "quarter" is a real average (or, at quarter
+resolution, an exact pass-through) of real samples — no faking finer
+granularity than exists.
+
+**Cost comparison now covers whatever window is selected, not always a
+full year** — `computeCostComparison` in `SpotPriceChart.svelte` sums each
+electricity sample's energy × the spot price at that exact timestamp
+(`spotCostEur`) and × the flat paid rate (`paidCostEur`), over the
+*currently selected* primary window (day/month/year/etc, whatever the
+resolution picker resolves to), with a second set of tiles for the compare
+window when comparison is on. Verified live at every resolution: annual
+totals match what the previous always-annual version produced exactly (a
+useful regression check after the rewrite); a single day's cost sensibly
+shows single-day-scale numbers (a few euros, not hundreds); paid cost still
+≈ window kWh × 0.11 exactly at every resolution (it's a flat rate, so this
+must always hold, and did).
+
+**Found via direct user feedback, not testing**: shipped an interim version
+showing cost tiles for *both* the primary and (whenever the page-level
+compare year was set, which defaults to "on" once 2+ years exist) the
+compare year, unconditionally — six tiles by default. Reported back as
+"shows the three boxes twice." It wasn't a rendering bug; it was 3+3
+deliberate tiles reading as an accidental duplicate because nothing
+distinguished the two groups clearly. Fixed by making comparison fully
+opt-in (matching the Electricity tab's explicit checkbox) rather than
+implicit-whenever-a-compare-year-exists — the same lesson as the
+`canCompare` gating below, arrived at from the other direction: comparison
+should never be default-on when it isn't yet clear the user knows they're
+comparing something.
+
+**A test-harness gotcha worth knowing for future e2e scripts**: both
+`ElectricityChart` and `SpotPriceChart` render a `.controls` div
+simultaneously — the inactive tab is just `display:none` on its parent,
+still present in the DOM. A Puppeteer script doing
+`document.querySelector('.controls')` silently grabs whichever tab's
+controls happen to come first in the template, not the visible one. Hit
+this firsthand verifying the resolution selector "wasn't working" on the
+Spot price tab — it worked fine; the test was clicking the Electricity
+tab's hidden dropdown. Scope any future control-manipulating script to the
+`.tab-content` that lacks the `hidden` class first.
+
+**Every control accounts for early production having partial-year,
+single-year data** — instruction was explicit: "there won't be data for
+whole year and no comparison data until year 2." Two changes, both in the
+shared `PeriodSelection`, so they apply to both tabs identically:
+- `GET /api/meta/range` (new) gives the actual earliest/latest data
+  timestamps. Date/month pickers default to and bound against this real
+  range (`minDate`/`maxDate`/`minMonth`/`maxMonth`) instead of assuming
+  `{year}-01-01` to `{year}-12-31` — defaulting to "Dec 31" when the year
+  is only half over would show an empty chart by default, which is a bad
+  first impression for a genuinely bad reason. `sameMonthInYear`/
+  `sameDateInYear` compute the compare picker's default as "same calendar
+  position, other year" (clamped for day-count, e.g. Feb 29 -> Feb 28),
+  not just "December" again.
+- Comparison is gated on `availableYears.length > 1` (`canCompare`)
+  everywhere it appears — the checkbox itself, and the global page-level
+  "Compare with" selector in `+page.svelte`. Before this, the old inline
+  `ElectricityChart` state defaulted `compareYear` to `maxYear` (i.e. the
+  *same* year as primary) when only one year existed, which would have
+  silently rendered a "comparison" against itself if ever enabled.
+  Verified live end-to-end with a genuinely single-year database (a
+  throwaway container, not the persistent dev one): both the global and
+  per-tab comparison controls disappear entirely, cost comparison shows
+  only one window's tiles, and nothing errors.
+
+**Defaults switched from "latest date with data" to "today"** — instruction:
+"Date should default to today." Previously every picker's default was
+derived from the real data range (`GET /api/meta/range`'s max), which
+always happened to be a date with data. `PeriodSelection`'s constructor
+(and the equivalent global year/compare-year logic in `+page.svelte`'s
+`onMount`) now compute `today`/`todayMonth`/`todayYear` directly and use
+those as the default `primaryYear`/`primaryMonth`/`primaryDate`/`year`,
+regardless of whether today has any data yet — a monitoring dashboard
+should default to "now", not "whenever data last happened to exist".
+`availableYears`/`minDate`/`maxDate` bounds are *extended* (not just
+defaulted) to always include today, so today's year is always a pickable
+option in the year dropdowns even before a single row exists for it.
+`compareYear` still defaults to the most recent *other* year that actually
+has data (today's year was just added and has none).
+
+This makes "the current year/month/day has zero data" a normal, common
+default state rather than a rare edge case only reachable by manual
+selection — and that flushed out a real latent bug: `ScatterChart.svelte`
+(Weather tab) computed its axis domain via `Math.min(...points)`/
+`Math.max(...points)`, which on an empty `points` array is
+`Infinity`/`-Infinity` in native JS, cascading into `NaN` domains and `NaN`
+tick keys (a Svelte `each_key_volatile`/`each_key_duplicate` runtime
+error). Fixed by falling back to an arbitrary `[0, 1]` domain when there
+are no points — the same class of bug the `niceMax(Math.max(0, ...))` fix
+addressed earlier for the bar/line charts, just not caught there since
+those charts happened to get exercised with non-empty defaults first.
+
+**Spot price chart displays c/kWh, not €/MWh** — instruction: "exis
+should show price in kWh rather than MWh" (axis), later refined to "Spot
+price should be in cents, not euros" — cents/kWh is what a Finnish
+household actually reads their contract/spot price in (e.g. "5.6
+snt/kWh"), not fractional euros. The API and `priceBuckets.ts` still
+return raw €/MWh (that's what the market data is in); `SpotPriceChart.svelte`
+divides by 10 at the point where chart points are built (`toPoints`, and
+the paid flat-line's `PAID_PRICE_EUR_PER_MWH / 10` — €/MWh -> c/kWh is
+÷1000 for €/kWh then ×100 for cents, i.e. ÷10 overall) and passes
+`unit="c/kWh"` to `DailyLineChart` — a display-only conversion, matching
+the established pattern of "convert at the edge, keep the data layer in
+the source unit". `computeCostComparison` (the three cost tiles) is
+deliberately untouched: it multiplies price × energy to get a total € cost,
+not a per-kWh rate, so €/MWh internally is still correct there (it already
+divides by 1000 once, for the MWh→kWh unit conversion in the
+multiplication itself). The KPI tile on the main page (`+page.svelte`,
+"Average spot price") got the same treatment: `avgSpotPrice` itself is
+still computed in €/MWh, divided by 10 only at the point it's formatted
+for display (2 decimal places, not 3 — cents don't need euro-scale
+precision). Verified live: a year with real data shows a realistic
+~3–10 c/kWh curve with the dashed paid line flat at 11 (110 EUR/MWh / 10 =
+11, the same flat-rate constant, just in cents now), and the KPI tile
+matches (e.g. "5.64 c/kWh").
+
+**A second real bug found during that verification, unrelated to the unit
+change**: reproduced by setting a tab's resolution to month/week, enabling
+comparison, and picking the *same* year for both Primary and Compare —
+`ps.primaryYear === ps.compareYear` gives two chart series the same name,
+which is also their Svelte keyed-each key, crashing with
+`each_key_duplicate`. This was always latent in `ElectricityChart.svelte`/
+`SpotPriceChart.svelte`'s year `<select>`s (both listed every
+`availableYears` entry unfiltered), but "default to today" made it far
+more likely to actually hit: today's year has no data by design now, so a
+user's very first action is often "change Year to the year that's already
+the default Compare-with value." Fixed the same way the page-level Year/
+Compare-with selectors already avoided this: the compare-year `<select>`
+now filters out `ps.primaryYear` from its options
+(`availableYears.filter((yr: number) => yr !== ps.primaryYear)`), and the
+primary-year `<select>`'s `onchange` clears `ps.compareYear` if it now
+equals the new primary year. The equivalent page-level gap — `onYearChange`
+in `+page.svelte` set `year` without checking `compareYear` — got the same
+`onchange` guard. Verified live: forcing the old collision (global Year
+select set to match the existing Compare-with value, and per-tab Primary/
+Compare year selects both set to the same year) no longer throws; the
+compare option simply isn't offered once it matches the primary selection.
 
 ## Frontend localization
 

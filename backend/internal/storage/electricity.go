@@ -92,3 +92,13 @@ func (r *ElectricityRepository) DistinctYears(ctx context.Context) ([]int, error
 	}
 	return out, rows.Err()
 }
+
+// DateRange returns the earliest and latest electricity_measurement
+// timestamps, or nil/nil if the table is empty. Lets the frontend default
+// to "the actual latest data" instead of assuming a full calendar year
+// exists — in early production there will be a partial first year, not a
+// complete Jan-Dec span.
+func (r *ElectricityRepository) DateRange(ctx context.Context) (min, max *time.Time, err error) {
+	err = r.pool.QueryRow(ctx, `SELECT min(time), max(time) FROM electricity_measurement`).Scan(&min, &max)
+	return min, max, err
+}

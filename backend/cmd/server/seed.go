@@ -95,9 +95,10 @@ func readJSONFile(path string, v any) error {
 const fakeSeedSource = "fake_seed"
 
 type fakeElectricityRow struct {
-	Time      string  `json:"time"`
-	PowerKW   float64 `json:"power_kw"`
-	EnergyKWh float64 `json:"energy_kwh"`
+	Time      string    `json:"time"`
+	PowerKW   float64   `json:"power_kw"`
+	EnergyKWh float64   `json:"energy_kwh"`
+	PhasesKW  []float64 `json:"phases_kw"`
 }
 
 func seedElectricity(ctx context.Context, repo *storage.ElectricityRepository, dir string, year int) error {
@@ -115,12 +116,14 @@ func seedElectricity(ctx context.Context, repo *storage.ElectricityRepository, d
 		}
 		cumulativeKWh += row.EnergyKWh
 		ic := cumulativeKWh
-		power := row.PowerKW
+		// p = [total, phase1, phase2, phase3], matching the real Cozify
+		// wire format (spec §3.2) — total first, then up to 3 phases.
+		p := append([]float64{row.PowerKW}, row.PhasesKW...)
 		measurements = append(measurements, domain.ElectricityMeasurement{
 			Time:       t,
 			Source:     fakeSeedSource,
 			IC:         &ic,
-			P:          []float64{power},
+			P:          p,
 			InsertedAt: time.Now().UTC(),
 		})
 	}
@@ -180,7 +183,7 @@ func seedSpotPrice(ctx context.Context, repo *storage.SpotPriceRepository, dir s
 		}
 		prices = append(prices, domain.SpotPrice{
 			IntervalStart: t,
-			IntervalEnd:   t.Add(time.Hour), // fake data is hourly, not the real 15-min spec
+			IntervalEnd:   t.Add(15 * time.Minute), // matches the real spec §5 15-min interval
 			Price:         row.PriceEURMWh,
 			Currency:      "EUR",
 			Unit:          "EUR/MWh",

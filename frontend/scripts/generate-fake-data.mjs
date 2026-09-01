@@ -119,6 +119,18 @@ function buildHourlyShape() {
 }
 const HOURLY_SHAPE = buildHourlyShape();
 
+// ---- 3-phase split: a real household load is rarely perfectly balanced
+// across phases, and which phase carries which appliance shifts over time
+// (not a fixed ratio) — so weights get per-quarter-hour noise, then are
+// renormalized to sum back to the total exactly.
+const PHASE_BASE_WEIGHTS = [0.36, 0.33, 0.31];
+
+function splitPhases(totalKw, rng) {
+	const noisy = PHASE_BASE_WEIGHTS.map((w) => Math.max(0.05, w * (1 + gaussian(rng, 0, 0.15))));
+	const sum = noisy.reduce((a, b) => a + b, 0);
+	return noisy.map((w) => (totalKw * w) / sum);
+}
+
 function generateYear(year, rng) {
 	const nDays = daysInYear(year);
 	const electricity = [];
@@ -146,17 +158,32 @@ function generateYear(year, rng) {
 			const dailyNoise = clamp(1 + gaussian(rng, 0, 0.08), 0.75, 1.3);
 			const dailyKwh = baseDailyKwh * heatingFactor * weekendFactor * dailyNoise;
 
+			// Electricity: 15-minute resolution (96 samples/day), not
+			// hourly — the dashboard's hour/15-min chart views drill into a
+			// single real day rather than averaging, so the underlying data
+			// needs to actually exist at that resolution.
 			for (let h = 0; h < 24; h++) {
-				const hourNoise = clamp(1 + gaussian(rng, 0, 0.05), 0.7, 1.4);
-				const energyKwh = dailyKwh * HOURLY_SHAPE[h] * hourNoise;
+				const hourShareKwh = dailyKwh * HOURLY_SHAPE[h];
+				for (let q = 0; q < 4; q++) {
+					const quarterNoise = clamp(1 + gaussian(rng, 0, 0.06), 0.6, 1.6);
+					const quarterKwh = (hourShareKwh / 4) * quarterNoise;
+					const totalKw = quarterKwh * 4; // energy(kWh) / 0.25h = power(kW)
+					const phasesKw = splitPhases(totalKw, rng);
+					const time = new Date(Date.UTC(year, month, d + 1, h, q * 15)).toISOString();
+
+					electricity.push({
+						time,
+						power_kw: Number(totalKw.toFixed(3)),
+						energy_kwh: Number(quarterKwh.toFixed(4)),
+						phases_kw: phasesKw.map((p) => Number(p.toFixed(3)))
+					});
+				}
+			}
+
+			// Weather stays hourly — only the electricity chart needs finer
+			// resolution.
+			for (let h = 0; h < 24; h++) {
 				const time = new Date(Date.UTC(year, month, d + 1, h)).toISOString();
-
-				electricity.push({
-					time,
-					power_kw: Number(energyKwh.toFixed(3)), // 1h interval: kWh == avg kW
-					energy_kwh: Number(energyKwh.toFixed(3))
-				});
-
 				const diurnalOffset =
 					-DIURNAL_AMPLITUDE_C * Math.cos((2 * Math.PI * (h - 14)) / 24);
 				const hourlyTemp = meanTemp + diurnalOffset + gaussian(rng, 0, 0.4);
@@ -191,25 +218,32 @@ function generateSpotPriceYear(year, rng) {
 			if (h >= 17 && h <= 20) hourMultiplier = 1.3; // evening peak
 			else if (h >= 0 && h <= 5) hourMultiplier = 0.7; // night trough
 
-			let price = base * hourMultiplier * clamp(1 + gaussian(rng, 0, 0.25), 0.2, 2.5);
-
-			// occasional summer-night negative/near-zero prices (high wind, low demand)
+			// Real Nordic spot prices moved to 15-minute settlement — this
+			// matches that (and matches electricity's own 15-min
+			// resolution, which the cost-comparison calculation depends on
+			// lining up exactly). A price-spike event is decided once per
+			// hour (a grid-stress event doesn't flicker quarter to
+			// quarter), everything else varies per quarter-hour for
+			// texture.
 			const isSummer = month >= 5 && month <= 7;
 			const isNight = h >= 1 && h <= 4;
-			if (isSummer && isNight && rng() < 0.12) {
-				price = -rng() * 15;
-			}
-			// occasional winter evening price spike
-			if (month <= 1 || month === 11) {
-				if (h >= 17 && h <= 20 && rng() < 0.05) {
-					price *= 2 + rng() * 2;
-				}
-			}
+			const isWinterEveningSpike = (month <= 1 || month === 11) && h >= 17 && h <= 20 && rng() < 0.05;
+			const spikeMultiplier = isWinterEveningSpike ? 2 + rng() * 2 : 1;
 
-			prices.push({
-				time: new Date(Date.UTC(year, 0, doy + 1, h)).toISOString(),
-				price_eur_mwh: Number(price.toFixed(2))
-			});
+			for (let q = 0; q < 4; q++) {
+				let price =
+					base * hourMultiplier * spikeMultiplier * clamp(1 + gaussian(rng, 0, 0.25), 0.2, 2.5);
+
+				// occasional summer-night negative/near-zero prices (high wind, low demand)
+				if (isSummer && isNight && rng() < 0.12) {
+					price = -rng() * 15;
+				}
+
+				prices.push({
+					time: new Date(Date.UTC(year, 0, doy + 1, h, q * 15)).toISOString(),
+					price_eur_mwh: Number(price.toFixed(2))
+				});
+			}
 		}
 	}
 
