@@ -15,6 +15,67 @@
 	import { _ as translate, locale } from 'svelte-i18n';
 
 	let dialogEl: HTMLDialogElement | undefined = $state();
+	let confirmDialogEl: HTMLDialogElement | undefined = $state();
+
+	// --- Close confirmation: "close" (X button, Cancel, Esc) never
+	// silently discards unsaved edits in either form. A snapshot taken
+	// whenever a form's baseline legitimately changes (dialog opened,
+	// prefilled from a save, an edit loaded, a save completes) lets
+	// isDirty compare "now" against "last known-safe state" instead of
+	// tracking a plain boolean that's easy to forget to clear somewhere. ---
+	let initialLocationSnapshot = $state('');
+	let initialContractSnapshot = $state('');
+	let discardResolve: ((discard: boolean) => void) | null = null;
+
+	function locationSnapshot(): string {
+		return JSON.stringify([homeLatitude, homeLongitude, selectedStationFMISID]);
+	}
+	function contractSnapshot(): string {
+		return JSON.stringify([
+			startDate,
+			fixedElectricityCost,
+			fixedTransferCost,
+			fixedMonthlyFee,
+			fixedElectricityTax,
+			fixedTransferTax,
+			spotElectricityCost,
+			spotTransferCost,
+			spotMonthlyFee,
+			spotElectricityTax,
+			spotTransferTax
+		]);
+	}
+	const isDirty = $derived(
+		locationSnapshot() !== initialLocationSnapshot || contractSnapshot() !== initialContractSnapshot
+	);
+
+	function confirmDiscard(): Promise<boolean> {
+		return new Promise((resolve) => {
+			discardResolve = resolve;
+			confirmDialogEl?.showModal();
+		});
+	}
+	function resolveDiscard(discard: boolean) {
+		confirmDialogEl?.close();
+		discardResolve?.(discard);
+		discardResolve = null;
+	}
+
+	// The one path every way of closing the dialog (X button, Cancel, Esc)
+	// goes through — so none of them can silently drop unsaved edits.
+	async function requestClose() {
+		if (isDirty && !(await confirmDiscard())) return;
+		dialogEl?.close();
+	}
+
+	// <dialog>'s native Esc-to-close fires a cancelable "cancel" event
+	// *before* closing — prevent it unconditionally and re-run the same
+	// async confirmation gate as every other close path, rather than
+	// letting Esc bypass the check synchronously.
+	function onDialogCancel(e: Event) {
+		e.preventDefault();
+		requestClose();
+	}
 
 	// --- Home location (spec §4.1) ---
 	let homeLatitude = $state<number | ''>('');
@@ -110,6 +171,8 @@
 				station_name: selectedStationName
 			});
 			locationSaved = true;
+			// Just saved — this is the new baseline, not an unsaved change.
+			initialLocationSnapshot = locationSnapshot();
 		} catch (e) {
 			locationError = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -184,11 +247,16 @@
 			spotElectricityTax = c.electricity_tax_eur;
 			spotTransferTax = c.transfer_tax_eur;
 		}
+		// The loaded contract is the new "nothing to lose" baseline — only
+		// further edits from here on should count as unsaved changes.
+		initialContractSnapshot = contractSnapshot();
 	}
 
 	export function open() {
 		resetForm();
 		resetLocationForm();
+		initialContractSnapshot = contractSnapshot();
+		initialLocationSnapshot = locationSnapshot();
 		dialogEl?.showModal();
 		// Prefill from whatever's already saved, if anything — fetched after
 		// showModal() so opening the dialog doesn't wait on a network call.
@@ -199,16 +267,15 @@
 				homeLongitude = loc.longitude;
 				selectedStationFMISID = loc.station_fmisid;
 				selectedStationName = loc.station_name;
+				// The just-loaded, already-saved location is itself a "nothing
+				// to lose" baseline, not an unsaved change.
+				initialLocationSnapshot = locationSnapshot();
 			})
 			.catch(() => {
 				// No existing location, or the backend is unreachable — either
 				// way, the form just starts blank; the user can still fill it
 				// in and save.
 			});
-	}
-
-	function close() {
-		dialogEl?.close();
 	}
 
 	function contractSummary(c: Contract, loc: string): string {
@@ -274,6 +341,8 @@
 			}
 			await contractsStore.refresh();
 			saved = true;
+			// Just saved — this is the new baseline, not an unsaved change.
+			initialContractSnapshot = contractSnapshot();
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 		} finally {
@@ -282,9 +351,20 @@
 	}
 </script>
 
-<dialog bind:this={dialogEl} class="settings-dialog" onclose={resetForm}>
+<dialog bind:this={dialogEl} class="settings-dialog" onclose={resetForm} oncancel={onDialogCancel}>
 	<form method="dialog" onsubmit={(e) => e.preventDefault()}>
-		<h2>{$translate('settings.title')}</h2>
+		<div class="dialog-header">
+			<h2>{$translate('settings.title')}</h2>
+			<button
+				type="button"
+				class="close-button"
+				onclick={requestClose}
+				aria-label={$translate('settings.close')}
+				title={$translate('settings.close')}
+			>
+				✕
+			</button>
+		</div>
 
 		<section class="location">
 			<h3>{$translate('settings.homeLocation')}</h3>
@@ -457,12 +537,22 @@
 		{/if}
 
 		<div class="actions">
-			<button type="button" onclick={close}>{$translate('settings.cancel')}</button>
+			<button type="button" onclick={requestClose}>{$translate('settings.cancel')}</button>
 			<button type="button" class="primary" onclick={save} disabled={saving}>
 				{editingId !== null ? $translate('settings.update') : $translate('settings.save')}
 			</button>
 		</div>
 	</form>
+</dialog>
+
+<dialog bind:this={confirmDialogEl} class="confirm-dialog">
+	<p>{$translate('settings.discardChangesMessage')}</p>
+	<div class="actions">
+		<button type="button" onclick={() => resolveDiscard(false)}>{$translate('settings.keepEditing')}</button>
+		<button type="button" class="primary" onclick={() => resolveDiscard(true)}>
+			{$translate('settings.discardChanges')}
+		</button>
+	</div>
 </dialog>
 
 <style>
@@ -481,9 +571,51 @@
 	form {
 		padding: 20px 24px 24px;
 	}
+	.dialog-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		margin-bottom: 16px;
+	}
+	.close-button {
+		font-size: 14px;
+		line-height: 1;
+		padding: 4px 8px;
+		border-radius: 4px;
+		border: 1px solid transparent;
+		background: none;
+		color: var(--text-secondary);
+		cursor: pointer;
+	}
+	.close-button:hover {
+		border-color: var(--border);
+		background: var(--surface-1);
+		color: var(--text-primary);
+	}
 	h2 {
 		font-size: 16px;
+		margin: 0;
+	}
+	.confirm-dialog {
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 20px 24px;
+		background: var(--surface-1);
+		color: var(--text-primary);
+		max-width: 360px;
+	}
+	.confirm-dialog::backdrop {
+		background: rgba(0, 0, 0, 0.4);
+	}
+	.confirm-dialog p {
+		font-size: 13px;
 		margin: 0 0 16px;
+	}
+	.confirm-dialog .actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin: 0;
 	}
 	h3 {
 		font-size: 13px;

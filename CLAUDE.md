@@ -216,6 +216,47 @@ requiring an env var + redeploy to change station.
   saved choice is visibly confirmed rather than silently implied by two
   populated coordinate fields.
 
+**Closing the settings dialog confirms if either form has unsaved
+changes** — on explicit instruction. An X button in the header
+(`.close-button`) joins the existing "Cancel" button and the `<dialog>`'s
+native Esc-to-close as the three ways to close it, and all three now go
+through the same `requestClose()` gate rather than each having its own
+close logic:
+
+- **Dirty tracking is snapshot-based, not a plain boolean.** `open()`
+  takes a snapshot of both forms' state right after resetting them (and
+  again after `loadHomeLocation()`'s async prefill resolves, since that
+  changes the location form's baseline *after* the dialog is already
+  open); `startEdit()` snapshots after loading a contract into the form;
+  a successful save (either form) re-snapshots immediately after. `isDirty`
+  is just "does either form's current JSON-stringified state differ from
+  its last snapshot" — this avoids the failure mode of a hand-maintained
+  `dirty = true/false` flag that's easy to forget to clear at one of the
+  several places a form's baseline legitimately moves.
+- **Esc is intercepted, not left to the browser default.** `<dialog>`
+  fires a cancelable `cancel` event before closing on Esc;
+  `onDialogCancel` unconditionally calls `preventDefault()` and re-runs
+  the exact same async `requestClose()` every other close path uses —
+  Esc can't bypass the confirmation just because its native handler is
+  synchronous and `requestClose` (which awaits the confirm dialog) isn't.
+- **The confirmation itself is a second native `<dialog>`
+  (`.confirm-dialog`), not `window.confirm()`** — this project translates
+  every UI string (see "Frontend localization"), and `window.confirm()`'s
+  OK/Cancel buttons can't be relabeled, only its message text can. A
+  second stacked `<dialog>` (browsers handle top-layer stacking between
+  two native dialogs natively) gets fully translated "Discard changes"/
+  "Keep editing" buttons instead, styled consistently with the rest of the
+  app. `confirmDiscard()` wraps it in a `Promise<boolean>` (resolved by
+  whichever button `resolveDiscard` was called from) so `requestClose` can
+  simply `await` it like any other async check.
+- Verified live (Puppeteer): closing via X/Cancel/Esc with no changes
+  closes immediately, no confirm dialog; making a change and closing via
+  any of the three shows the confirm dialog with the settings dialog still
+  open underneath; "Keep editing" closes only the confirm dialog and
+  preserves the in-progress field value; "Discard changes" closes both;
+  and saving successfully (either form) then closing immediately after
+  does *not* prompt, since the save itself re-snapshots the baseline.
+
 ## Scheduler
 
 `internal/scheduler.Run(ctx, name, interval, job)` is a generic ticker

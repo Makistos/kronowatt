@@ -58,6 +58,10 @@
 	},
 	"settings": {
 		"title": "Settings",
+		"close": "Close",
+		"discardChangesMessage": "You have unsaved changes. Discard them?",
+		"discardChanges": "Discard changes",
+		"keepEditing": "Keep editing",
 		"homeLocation": "Home location",
 		"latitude": "Latitude",
 		"longitude": "Longitude",

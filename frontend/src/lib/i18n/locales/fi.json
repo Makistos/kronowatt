@@ -58,6 +58,10 @@
 	},
 	"settings": {
 		"title": "Asetukset",
+		"close": "Sulje",
+		"discardChangesMessage": "Sinulla on tallentamattomia muutoksia. Hylätäänkö ne?",
+		"discardChanges": "Hylkää muutokset",
+		"keepEditing": "Jatka muokkausta",
 		"homeLocation": "Kodin sijainti",
 		"latitude": "Leveysaste",
 		"longitude": "Pituusaste",
