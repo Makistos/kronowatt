@@ -202,6 +202,44 @@ export async function updateContract(id: number, contract: NewContract): Promise
 	return sendJson<Contract>('PUT', `/api/contracts/${id}`, contract);
 }
 
+// The household's coordinates and the FMI station chosen for weather
+// observations (spec §4.1's "User location... used for forecasts",
+// extended to also pick the observation station — see CLAUDE.md "Home
+// location and nearest-station search").
+export type HomeLocation = {
+	latitude: number;
+	longitude: number;
+	station_fmisid: string;
+	station_name: string;
+};
+
+/** null if never configured — same "null, not 404" convention as
+ * loadDateRange, so the settings dialog can tell "not set yet" apart from
+ * a request error. */
+export async function loadHomeLocation(): Promise<HomeLocation | null> {
+	return fetchJson<HomeLocation | null>('/api/home-location');
+}
+
+export async function saveHomeLocation(location: HomeLocation): Promise<HomeLocation> {
+	return sendJson<HomeLocation>('PUT', '/api/home-location', location);
+}
+
+export type NearestStation = {
+	fmisid: string;
+	name: string;
+	latitude: number;
+	longitude: number;
+	distance_km: number;
+};
+
+/** A live lookup against FMI's own station list + current observations
+ * (not stored data — see the backend's nearestStationsHandler), so this
+ * can be slow-ish (a couple of real HTTP round trips server-side) and can
+ * fail if FMI is unreachable; callers should handle both. */
+export async function findNearestStations(lat: number, lon: number): Promise<NearestStation[]> {
+	return fetchJson<NearestStation[]>(`/api/weather/stations/nearest?lat=${lat}&lon=${lon}`);
+}
+
 export async function loadEvSessions(year: number): Promise<EvSession[]> {
 	const rows = await fetchJson<evSessionDTO[]>(`/api/ev/sessions?year=${year}`);
 	return rows

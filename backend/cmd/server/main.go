@@ -47,7 +47,7 @@ func runServer() {
 	}
 	defer pool.Close()
 
-	fmiJob := newFMIJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool))
+	fmiJob := newFMIJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool), storage.NewHomeLocationRepository(pool))
 	go scheduler.Run(ctx, "fmi_observation", cfg.FMIPollInterval, fmiJob)
 
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: api.NewRouter(pool, cfg.DiskCheckPath)}

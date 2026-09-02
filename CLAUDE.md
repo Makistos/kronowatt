@@ -21,6 +21,10 @@ only public internet access. What's real:
   pricing (spec §6/§43 Step 6, settings-dialog scope — see "Contracts") is
   also real now: `electricity_contract`/`contract_price_period` hold
   actual user-entered rows via `GET|POST /api/contracts`, not just schema.
+  The FMI observation station is also user-configurable now, not a fixed
+  config default — `home_location` plus `GET/PUT /api/home-location` and
+  `GET /api/weather/stations/nearest` back the settings UI's "find nearest
+  station" flow — see "Home location and nearest-station search".
   `internal/collectors/{cozify,spotprice,ev}` and `internal/analysis` are
   still empty stubs (no real spot-price or EV collector exists — only
   weather does — so `spot_price`/`ev_charging_session` only ever have
@@ -40,8 +44,10 @@ only public internet access. What's real:
   rendering unverified — see that section). A "Settings" button/dialog
   (`src/lib/SettingsDialog.svelte`, global in `+layout.svelte`) lets the
   user enter contract pricing, which now genuinely drives the Spot price
-  tab's paid-price line and cost tiles — see "Contracts". Localized via
-  `svelte-i18n`, English and Finnish — see "Frontend localization".
+  tab's paid-price line and cost tiles — see "Contracts" — plus a "Home
+  location" section for picking the FMI observation station (see "Home
+  location and nearest-station search"). Localized via `svelte-i18n`,
+  English and Finnish — see "Frontend localization".
 - `deployment/`: custom TimescaleDB Docker image (builds, extension
   verified), systemd unit files, `deploy.sh` (not yet exercised against a
   real target box).
@@ -63,8 +69,11 @@ Chosen because the target deployment is a systemd service with an
 `EnvironmentFile` (see `deployment/kronowatt-backend.service`); a config
 file parser would be an extra dependency for no real benefit at this scale.
 Current vars: `KRONOWATT_DB_DSN` (required), `KRONOWATT_HTTP_ADDR` (default
-`:8080`), `KRONOWATT_FMI_STATION_FMISID` (default `101786`),
-`KRONOWATT_FMI_POLL_INTERVAL` (default `10m`). Revisit if a future
+`:8080`), `KRONOWATT_FMI_STATION_FMISID` (default `101786` — only a
+fallback now, used until the settings UI's home-location "find nearest
+station" flow ever saves one to the `home_location` table; see "Home
+location and nearest-station search"), `KRONOWATT_FMI_POLL_INTERVAL`
+(default `10m`). Revisit if a future
 collector needs config too structured for flat env vars (Cozify's spec
 §3.3 example shows YAML, but that's illustrative, not a firm requirement).
 
@@ -103,12 +112,109 @@ reverse-engineered). Verified against a live response for FMISID 101786
   10-15min range; a genuinely longer outage would need an explicit
   `since` argument to `FetchObservations` (already supported, just not
   wired to persisted "last successful collection time" yet).
-- `weather_test.go` uses a trimmed real fixture
+- `fmi_test.go` uses a trimmed real fixture
   (`testdata/observations_101786.xml`, 4 timestamps) rather than a
   hand-written one or a live network call in tests.
+- **The station to poll is no longer a fixed config default** —
+  `newFMIJob` (`cmd/server/collect.go`) resolves it fresh on every run from
+  `home_location` (set via the settings UI's "find nearest station" flow;
+  see "Home location and nearest-station search" below), falling back to
+  `cfg.FMIStationFMISID` only until a home location has ever been saved.
+  Changing it in the UI takes effect on the next scheduled poll — no
+  restart needed, since it's read from the DB per-run, not baked in at
+  startup.
 
 Forecast collection (spec §4.3, separate endpoint/stored query,
 never-overwrite-old-versions semantics) is not implemented yet.
+
+## Home location and nearest-station search
+
+Settings dialog feature, on explicit instruction: a "Home location"
+section (coordinates + an optional "Use my location" geolocation button)
+that, once coordinates exist, activates a "Find nearest station" search
+offering the 3 closest FMI weather stations to choose from. This is what
+`KRONOWATT_FMI_STATION_FMISID`'s hardcoded default (101786, Oulu
+lentoasema) should have always been backed by — spec §4.1 describes a real
+user location (64.943604N, 25.367475E) distinct from the fixed observation
+station, and this feature is what actually connects the two instead of
+requiring an env var + redeploy to change station.
+
+- **`home_location`** (migration `00009_home_location.sql`) is a
+  single-row settings table (`id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id =
+  1)`, upserted onto id=1 always) — coordinates plus the chosen
+  `station_fmisid`/`station_name`, no history (unlike contracts, spec
+  §2.4's "effective price by timestamp" doesn't apply to "where is the
+  house"). `GET /api/home-location` returns `null` (not 404) when unset —
+  same convention as `GET /api/meta/range`'s null min/max, so the frontend
+  can tell "not configured yet" apart from a request error. `PUT
+  /api/home-location` requires a non-empty `station_fmisid`/`station_name`
+  — the settings UI always sends one selected from a nearest-station
+  search, never free text.
+- **`GET /api/weather/stations/nearest?lat=&lon=`** is a *live* lookup
+  against FMI's own APIs, not stored data — there's nothing in `storage`
+  to serve "which stations exist near here" from. `internal/api/homelocation.go`'s
+  `nearestStationsHandler` calls `internal/collectors/fmi`'s exported
+  `FindNearbyStations` directly — a deliberate, narrow exception to spec
+  §2.5's "api/ depends on storage, not collector internals": it's a public
+  function already returning clean `Station`/`StationDistance` types (no
+  raw FMI XML reaches the handler), not a reach into unexported collector
+  state, and there's no repository layer that could sensibly sit in
+  between a live external lookup and its caller.
+- **`FindNearbyStations` (`internal/collectors/fmi/stations.go`) only
+  returns stations that are *currently reporting*, not just any entry in
+  FMI's station metadata** — this took two real discoveries to get right,
+  both confirmed against live FMI responses rather than assumed:
+  - FMI's `fmi::ef::stations` metadata query (441 total stations, all
+    networks) includes non-weather station types (sea-level gauges,
+    hydrological stations, ...) that would never produce a reading via
+    `fmi::observations::weather::simple` if picked from the list. Worse,
+    filtering by network id doesn't cleanly separate them either: Oulu
+    lentoasema (101786) — this project's own reference station — turned
+    out to belong to networkid=224 ("IL:n hallinnoima lentosääasema",
+    airport-operated), not the seemingly-obvious "weather network"
+    networkid=121, so a network-id allowlist would have wrongly excluded
+    the one station already confirmed to work.
+  - The fix: query `fmi::observations::weather::simple` itself with a
+    `bbox` around the target coordinates, restricted to `parameters=t2m`
+    and a `starttime` ~20 minutes ago — confirmed live to cut a 14MB
+    unrestricted bbox response (every parameter, full ~12h window) down to
+    ~9KB for the same box. The *distinct coordinates* that come back are,
+    by construction, stations that are genuinely reporting temperature
+    right now; those coordinates are then matched back to the metadata
+    list (exact/near-exact float match, confirmed live to line up to 5-6
+    decimal places) purely to resolve a human name and FMISID.
+  - Starts with a ±0.5°lat/±1.0°lon box and doubles it (up to 4 times) if
+    fewer than 3 reporting stations are found — Lapland's sparser network
+    needs a wider search than the coast does.
+- Two new fixtures in `internal/collectors/fmi/testdata/`
+  (`stations_sample.xml`, a 5-station trim of the real metadata response
+  including Oulu lentoasema; `nearby_observations_sample.xml`, a real
+  ~9KB restricted-bbox response) back `stations_test.go`, following the
+  same "trimmed real fixture over hand-written" convention as
+  `fmi_test.go`. `TestFindNearbyStationsRanking` exercises the ranking
+  logic (not the network calls) and asserts that searching from Oulu
+  lentoasema's own coordinates ranks Oulu lentoasema first at ~0km —
+  verified against the live API too (`go run` against real coordinates
+  returned 101786 at 1.64km as the nearest result, matching what's already
+  hardcoded as this project's reference station).
+- **Frontend** (`SettingsDialog.svelte`, "Home location" section, above
+  the contract-pricing sections): latitude/longitude inputs, an "Use my
+  location" button gated on `'geolocation' in navigator` (checked in
+  `onMount`, since `navigator` doesn't exist during adapter-static's
+  prerender pass — same guard pattern as `+layout.svelte`'s localStorage
+  read), and a "Find nearest station" button disabled until both
+  coordinates are filled in. Results render as a radio list; picking one
+  and clicking "Save location" calls `PUT /api/home-location`. Editing
+  either coordinate after a search already ran clears the stale results
+  and selection (`onCoordsChanged`) rather than letting an old selection
+  silently ride along with new coordinates it may no longer be nearest
+  to — same defensive pattern as the Electricity/Spot price tabs clearing
+  a stale compare-year selection. Reopening the dialog prefills from
+  whatever's already saved (`loadHomeLocation`, fetched after
+  `showModal()` so opening doesn't wait on a network call) and shows
+  "Currently selected: {station}" even before a fresh search, so the
+  saved choice is visibly confirmed rather than silently implied by two
+  populated coordinate fields.
 
 ## Scheduler
 
@@ -178,9 +284,14 @@ structs storage returns).
   400; the frontend dashboard rendered from these endpoints end-to-end
   (screenshotted), and correctly showed its empty-state error (not stale
   cached data) when the backend was killed mid-session.
-- `GET /api/contracts` / `POST /api/contracts` — see "Contracts" below.
-  Real, user-entered rows now, not seeded fixtures — the fake-data
-  generator still doesn't (and shouldn't) produce contracts.
+- `GET /api/contracts` / `POST /api/contracts` / `PUT /api/contracts/{id}`
+  — see "Contracts" below. Real, user-entered rows now, not seeded
+  fixtures — the fake-data generator still doesn't (and shouldn't) produce
+  contracts.
+- `GET|PUT /api/home-location` and `GET /api/weather/stations/nearest` —
+  see "Home location and nearest-station search" below. The latter is the
+  one live-external-lookup exception to "api/ depends on storage, not
+  collector internals" (spec §2.5) — documented and justified there.
 - **Not yet done**: no real spot-price or EV collectors, so those two
   tables only ever have seeded fake rows today.
 
@@ -908,7 +1019,8 @@ tested). Design decisions worth knowing before touching this:
   `electricity_contract` / `contract_price_period` (small, manually
   entered, mutable), `ev_charging_session` (sparse, mutable while a
   session is in progress — doesn't fit hypertables' append-only chunk
-  model).
+  model), `home_location` (single-row settings, no time dimension at all —
+  see "Home location and nearest-station search").
 - **Idempotency (§2.6)** is enforced via `UNIQUE` constraints, not
   application-level dedup: `electricity_measurement` and `ev_measurement`
   are unique on `time` alone (*not* `(time, source)`) — a live sample and a

@@ -33,7 +33,7 @@ func runCollect(args []string) {
 	}
 	defer pool.Close()
 
-	job := newFMIJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool))
+	job := newFMIJob(cfg, storage.NewWeatherRepository(pool), storage.NewCollectorRepository(pool), storage.NewHomeLocationRepository(pool))
 	if err := job(ctx); err != nil {
 		log.Fatalf("collect weather: %v", err)
 	}
@@ -41,13 +41,25 @@ func runCollect(args []string) {
 
 // newFMIJob wires the FMI collector's fetch/parse logic (which knows
 // nothing about storage — spec §2.5) to the repository layer and collector
-// health tracking, as a scheduler.Job.
-func newFMIJob(cfg config.Config, repo *storage.WeatherRepository, collectorRepo *storage.CollectorRepository) scheduler.Job {
+// health tracking, as a scheduler.Job. The station to poll is resolved
+// fresh on every run from home_location (set via the settings UI's
+// "find nearest station" flow), not baked in once at startup — so changing
+// it takes effect on the next poll, no restart needed. Falls back to
+// cfg.FMIStationFMISID (the original static default) until a home location
+// has ever been saved.
+func newFMIJob(cfg config.Config, repo *storage.WeatherRepository, collectorRepo *storage.CollectorRepository, homeLocationRepo *storage.HomeLocationRepository) scheduler.Job {
 	const name = "fmi_observation"
 	client := &http.Client{Timeout: 30 * time.Second}
 
 	return func(ctx context.Context) error {
-		obs, err := fmi.FetchObservations(ctx, client, cfg.FMIStationFMISID, time.Time{})
+		fmisid := cfg.FMIStationFMISID
+		if loc, ok, err := homeLocationRepo.Get(ctx); err != nil {
+			slog.Default().With("collector", name).Error("load home location failed, using default station", "error", err)
+		} else if ok {
+			fmisid = loc.StationFMISID
+		}
+
+		obs, err := fmi.FetchObservations(ctx, client, fmisid, time.Time{})
 		if err != nil {
 			_ = collectorRepo.RecordError(ctx, name, err)
 			return fmt.Errorf("fetch: %w", err)

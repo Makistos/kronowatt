@@ -6,6 +6,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -19,6 +20,8 @@ func NewRouter(pool *pgxpool.Pool, diskCheckPath string) http.Handler {
 	spotPriceRepo := storage.NewSpotPriceRepository(pool)
 	evRepo := storage.NewEVRepository(pool)
 	contractRepo := storage.NewContractRepository(pool)
+	homeLocationRepo := storage.NewHomeLocationRepository(pool)
+	fmiClient := &http.Client{Timeout: 20 * time.Second}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(collectorRepo, diskCheckPath))
@@ -30,6 +33,8 @@ func NewRouter(pool *pgxpool.Pool, diskCheckPath string) http.Handler {
 	mux.HandleFunc("GET /api/ev/sessions", evSessionsHandler(evRepo))
 	mux.HandleFunc("/api/contracts", contractsHandler(contractRepo))
 	mux.HandleFunc("/api/contracts/{id}", contractHandler(contractRepo))
+	mux.HandleFunc("/api/home-location", homeLocationHandler(homeLocationRepo))
+	mux.HandleFunc("GET /api/weather/stations/nearest", nearestStationsHandler(fmiClient))
 
 	return withCORS(mux)
 }

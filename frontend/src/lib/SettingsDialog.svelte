@@ -1,10 +1,121 @@
 <script lang="ts">
-	import { createContract, updateContract, type Contract, type NewContract } from './api';
+	import { onMount } from 'svelte';
+	import {
+		createContract,
+		updateContract,
+		loadHomeLocation,
+		saveHomeLocation,
+		findNearestStations,
+		type Contract,
+		type NewContract,
+		type NearestStation
+	} from './api';
 	import { contractsStore } from './contractsStore.svelte';
 	import { formatDate, formatNumber } from './format';
 	import { _ as translate, locale } from 'svelte-i18n';
 
 	let dialogEl: HTMLDialogElement | undefined = $state();
+
+	// --- Home location (spec §4.1) ---
+	let homeLatitude = $state<number | ''>('');
+	let homeLongitude = $state<number | ''>('');
+	let geolocationAvailable = $state(false); // set in onMount — navigator doesn't exist during prerender
+	let geoError = $state<string | null>(null);
+	let nearestStations = $state<NearestStation[]>([]);
+	let findingNearest = $state(false);
+	let stationsError = $state<string | null>(null);
+	let selectedStationFMISID = $state<string | null>(null);
+	let selectedStationName = $state<string | null>(null);
+	let locationSaving = $state(false);
+	let locationSaved = $state(false);
+	let locationError = $state<string | null>(null);
+
+	const canFindStations = $derived(homeLatitude !== '' && homeLongitude !== '');
+
+	onMount(() => {
+		geolocationAvailable = typeof navigator !== 'undefined' && 'geolocation' in navigator;
+	});
+
+	function resetLocationForm() {
+		homeLatitude = '';
+		homeLongitude = '';
+		geoError = null;
+		nearestStations = [];
+		stationsError = null;
+		selectedStationFMISID = null;
+		selectedStationName = null;
+		locationError = null;
+		locationSaved = false;
+	}
+
+	// Coordinates changed (typed or re-geolocated) after a search already
+	// ran — the previous "nearest" results and any selected station no
+	// longer necessarily apply, so clear them rather than let a stale
+	// selection silently ride along with new coordinates.
+	function onCoordsChanged() {
+		nearestStations = [];
+		selectedStationFMISID = null;
+		selectedStationName = null;
+		locationSaved = false;
+	}
+
+	function useMyLocation() {
+		geoError = null;
+		navigator.geolocation.getCurrentPosition(
+			(pos) => {
+				homeLatitude = pos.coords.latitude;
+				homeLongitude = pos.coords.longitude;
+				onCoordsChanged();
+			},
+			(err) => {
+				geoError = err.message;
+			},
+			{ enableHighAccuracy: true, timeout: 10000 }
+		);
+	}
+
+	async function findNearest() {
+		if (!canFindStations) return;
+		stationsError = null;
+		findingNearest = true;
+		try {
+			nearestStations = await findNearestStations(Number(homeLatitude), Number(homeLongitude));
+			selectedStationFMISID = null;
+			selectedStationName = null;
+		} catch (e) {
+			stationsError = e instanceof Error ? e.message : String(e);
+		} finally {
+			findingNearest = false;
+		}
+	}
+
+	function selectStation(s: NearestStation) {
+		selectedStationFMISID = s.fmisid;
+		selectedStationName = s.name;
+	}
+
+	async function saveLocation() {
+		locationError = null;
+		locationSaved = false;
+		if (homeLatitude === '' || homeLongitude === '' || !selectedStationFMISID || !selectedStationName) {
+			locationError = $translate('settings.locationValidationError');
+			return;
+		}
+		locationSaving = true;
+		try {
+			await saveHomeLocation({
+				latitude: homeLatitude,
+				longitude: homeLongitude,
+				station_fmisid: selectedStationFMISID,
+				station_name: selectedStationName
+			});
+			locationSaved = true;
+		} catch (e) {
+			locationError = e instanceof Error ? e.message : String(e);
+		} finally {
+			locationSaving = false;
+		}
+	}
 
 	// null = the form is adding a new contract; otherwise the id of the
 	// existing contract currently loaded into the form for editing.
@@ -77,7 +188,23 @@
 
 	export function open() {
 		resetForm();
+		resetLocationForm();
 		dialogEl?.showModal();
+		// Prefill from whatever's already saved, if anything — fetched after
+		// showModal() so opening the dialog doesn't wait on a network call.
+		loadHomeLocation()
+			.then((loc) => {
+				if (!loc) return;
+				homeLatitude = loc.latitude;
+				homeLongitude = loc.longitude;
+				selectedStationFMISID = loc.station_fmisid;
+				selectedStationName = loc.station_name;
+			})
+			.catch(() => {
+				// No existing location, or the backend is unreachable — either
+				// way, the form just starts blank; the user can still fill it
+				// in and save.
+			});
 	}
 
 	function close() {
@@ -158,6 +285,87 @@
 <dialog bind:this={dialogEl} class="settings-dialog" onclose={resetForm}>
 	<form method="dialog" onsubmit={(e) => e.preventDefault()}>
 		<h2>{$translate('settings.title')}</h2>
+
+		<section class="location">
+			<h3>{$translate('settings.homeLocation')}</h3>
+
+			<div class="coords-row">
+				<label>
+					{$translate('settings.latitude')}
+					<input
+						type="number"
+						step="0.000001"
+						bind:value={homeLatitude}
+						onchange={onCoordsChanged}
+					/>
+				</label>
+				<label>
+					{$translate('settings.longitude')}
+					<input
+						type="number"
+						step="0.000001"
+						bind:value={homeLongitude}
+						onchange={onCoordsChanged}
+					/>
+				</label>
+				{#if geolocationAvailable}
+					<button type="button" onclick={useMyLocation}>{$translate('settings.useMyLocation')}</button>
+				{/if}
+			</div>
+			{#if geoError}
+				<p class="error">{geoError}</p>
+			{/if}
+
+			<button type="button" onclick={findNearest} disabled={!canFindStations || findingNearest}>
+				{findingNearest ? $translate('settings.searching') : $translate('settings.findNearestStation')}
+			</button>
+
+			{#if stationsError}
+				<p class="error">{stationsError}</p>
+			{/if}
+
+			{#if nearestStations.length === 0 && selectedStationFMISID}
+				<p class="hint">
+					{$translate('settings.currentStation', { values: { name: selectedStationName ?? '' } })}
+				</p>
+			{/if}
+
+			{#if nearestStations.length > 0}
+				<ul class="station-list">
+					{#each nearestStations as s (s.fmisid)}
+						<li>
+							<label>
+								<input
+									type="radio"
+									name="station"
+									checked={selectedStationFMISID === s.fmisid}
+									onchange={() => selectStation(s)}
+								/>
+								{s.name} — {formatNumber(s.distance_km, 1, $locale ?? 'en')} km
+							</label>
+						</li>
+					{/each}
+				</ul>
+			{/if}
+
+			{#if locationError}
+				<p class="error">{locationError}</p>
+			{/if}
+			{#if locationSaved}
+				<p class="success">{$translate('settings.locationSaved')}</p>
+			{/if}
+
+			<div class="actions">
+				<button
+					type="button"
+					class="primary"
+					onclick={saveLocation}
+					disabled={locationSaving || !selectedStationFMISID}
+				>
+					{$translate('settings.saveLocation')}
+				</button>
+			</div>
+		</section>
 
 		<section class="existing">
 			<h3>{$translate('settings.existingContracts')}</h3>
@@ -288,6 +496,45 @@
 	}
 	.existing h3 {
 		margin-bottom: 8px;
+	}
+	.location {
+		margin-bottom: 20px;
+		padding-bottom: 16px;
+		border-bottom: 1px solid var(--border);
+	}
+	.location h3 {
+		margin-bottom: 8px;
+	}
+	.location > button {
+		margin: 8px 0;
+	}
+	.coords-row {
+		display: flex;
+		align-items: flex-end;
+		gap: 12px;
+		flex-wrap: wrap;
+		margin-bottom: 8px;
+	}
+	.coords-row label {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+	.station-list {
+		list-style: none;
+		margin: 0 0 8px;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.station-list label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		font-size: 13px;
 	}
 	.contract-list {
 		list-style: none;
